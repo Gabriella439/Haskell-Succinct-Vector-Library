@@ -20,7 +20,7 @@ Just 64
 
 module Succinct.Vector (
     -- * Construction
-      Index
+      SuccinctBitVector
     , prepare
 
     -- * Queries
@@ -47,7 +47,7 @@ import qualified Data.Vector.Primitive as Primitive
 
     This will silently fail and return garbage if you supply an invalid index
 -}
-unsafeIndex :: Index -> Int -> Bool
+unsafeIndex :: SuccinctBitVector -> Int -> Bool
 unsafeIndex i n = Bits.testBit w8 r
   where
     (q, r) = quotRem n 64
@@ -55,7 +55,7 @@ unsafeIndex i n = Bits.testBit w8 r
 
 
 -- | @(index i n)@ retrieves the bit at the index @n@
-index :: Index -> Int -> Maybe Bool
+index :: SuccinctBitVector -> Int -> Maybe Bool
 index i n =
     if 0 <= n && n < size i
     then Just (unsafeIndex i n)
@@ -64,9 +64,9 @@ index i n =
 {-| A bit vector enriched with an index that adds O(1) `rank` and `select`
     queries
 
-    The `Index` increases the original bit vector's size by 25%
+    The `SuccinctBitVector` increases the original bit vector's size by 25%
 -}
-data Index = Index
+data SuccinctBitVector = SuccinctBitVector
     { size :: {-# UNPACK #-} !Int
     -- ^ Size of original bit vector, in bits
     , idx  :: {-# UNPACK #-} !(Primitive.Vector Word64)
@@ -75,7 +75,7 @@ data Index = Index
     -- ^ Original bit vector
     }
 
-instance NFData Index where
+instance NFData SuccinctBitVector where
     rnf i = i `seq` ()
 
 data Level = First | Second
@@ -83,7 +83,7 @@ data Level = First | Second
 data Status = Status
                    !Level
     {-# UNPACK #-} !Word64  -- Current rank
-    {-# UNPACK #-} !Int     -- Index in vector
+    {-# UNPACK #-} !Int     -- Position in vector
 
 popCount :: Word64 -> Word64
 popCount x0 = Bits.unsafeShiftR (x3 * 0x0101010101010101) 56
@@ -92,12 +92,13 @@ popCount x0 = Bits.unsafeShiftR (x3 * 0x0101010101010101) 56
     x2 = (x1 .&. 0x3333333333333333) + ((Bits.unsafeShiftR x1 2) .&. 0x3333333333333333)
     x3 = (x2 + (Bits.unsafeShiftR x2 4)) .&. 0x0F0F0F0F0F0F0F0F
 
-{-| Create an `Index` from a `Primitive.Vector` of bits packed as `Word64`s
+{-| Create an `SuccinctBitVector` from a `Primitive.Vector` of bits packed as
+    `Word64`s
 
     You are responsible for padding your data to the next `Word64` boundary
 -}
-prepare :: Primitive.Vector Word64 -> Index
-prepare v = Index
+prepare :: Primitive.Vector Word64 -> SuccinctBitVector
+prepare v = SuccinctBitVector
     { size = len * 64
     , idx  = Primitive.unfoldrN iLen iStep iBegin
     , bits = v
@@ -148,8 +149,8 @@ prepare v = Index
 
     This will silently fail and return garbage if you supply an invalid index
 -}
-unsafeRank :: Index -> Int -> Word64
-unsafeRank (Index _ idx_ bits_) p =
+unsafeRank :: SuccinctBitVector -> Int -> Word64
+unsafeRank (SuccinctBitVector _ idx_ bits_) p =
         f
     +   ((Bits.unsafeShiftR s (fromIntegral ((t + (Bits.unsafeShiftR t 60 .&. 0x8)) * 9))) .&. 0x1FF)
     +   popCount (Primitive.unsafeIndex bits_ w .&. mask)
@@ -181,7 +182,7 @@ prop> let i = prepare v in rank i (size i) == Just (Primitive.sum (Primitive.map
 
 prop> let i = prepare v in (0 <= n && n <= size i) || (rank i n == Nothing)
 -}
-rank :: Index -> Int -> Maybe Word64
+rank :: SuccinctBitVector -> Int -> Maybe Word64
 rank i p =
     if 0 <= p && p <= size i
     then Just (unsafeRank i p)
