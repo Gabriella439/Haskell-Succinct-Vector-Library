@@ -181,13 +181,7 @@ prop> let i = prepare v in rank i (size i) == Just (Primitive.sum (Primitive.map
 
 prop> let i = prepare v in (0 <= n && n <= size i) || (rank i n == Nothing)
 -}
-rank
-    :: Index
-    -- ^
-    -> Int
-    -- ^ Bit index (0-indexed)
-    -> Maybe Word64
-    -- ^ Number of ones up to, but not including, the given bit index
+rank :: Index -> Int -> Maybe Word64
 rank i p =
     if 0 <= p && p <= size i
     then Just (unsafeRank i p)
