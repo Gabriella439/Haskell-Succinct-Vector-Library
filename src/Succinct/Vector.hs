@@ -2,14 +2,14 @@
 
 >>> import Data.Vector.Primitive
 >>> let v = fromList [maxBound, 0] :: Vector Word64
->>> let idx = prepare v
->>> index idx 63
+>>> let sbv = prepare v
+>>> index sbv 63
 Just True
->>> index idx 64
+>>> index sbv 64
 Just False
->>> rank idx 27
+>>> rank sbv 27
 Just 27
->>> rank idx 128
+>>> rank sbv 128
 Just 64
 
     This module is based on the paper "Broadword Implementation of Rank/Select
@@ -172,7 +172,7 @@ Just 2
     returns the total number of ones in the bit vector
 
 prop> rank (prepare v) 0 == Just 0
-prop> let i = prepare v in rank i (size i) == Just (Primitive.sum (Primitive.map popCount v))
+prop> let sv = prepare v in rank sv (size sv) == Just (Primitive.sum (Primitive.map popCount v))
 
     This returns a valid value wrapped in a `Just` when:
 
@@ -180,7 +180,7 @@ prop> let i = prepare v in rank i (size i) == Just (Primitive.sum (Primitive.map
 
     ... and returns `Nothing` otherwise
 
-prop> let i = prepare v in (0 <= n && n <= size i) || (rank i n == Nothing)
+prop> let sv = prepare v in (0 <= n && n <= size sv) || (rank sv n == Nothing)
 -}
 rank :: SuccinctBitVector -> Int -> Maybe Word64
 rank i p =
