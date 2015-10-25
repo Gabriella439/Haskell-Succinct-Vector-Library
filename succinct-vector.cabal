@@ -1,0 +1,58 @@
+Name: succinct-vector
+Version: 1.0.0
+Cabal-Version: >=1.10
+Build-Type: Simple
+License: BSD3
+License-File: LICENSE
+Copyright: 2015 Gabriel Gonzalez
+Author: Gabriel Gonzalez
+Maintainer: Gabriel439@gmail.com
+Bug-Reports: https://github.com/Gabriel439/Haskell-Succinct-Vector-Library/issues
+Synopsis: Succinct vectors
+Description: This package provides a compact way to index a bit vector in order
+    to compute two fundamental operations in constant time:
+    .
+    * `rank`   - Count how many ones there are up to a given index
+    * `select` - Find the "nth" one
+    .
+    You can then use these two fundamental operations to compute many other
+    derived operations efficiently in constant time.
+Category: Data
+Source-Repository head
+    Type: git
+    Location: https://github.com/Gabriel439/Haskell-Succinct-Vector-Library
+
+Library
+    HS-Source-Dirs: src
+    Build-Depends:
+        base    >= 4.5 && < 5   ,
+        deepseq           < 1.5 ,
+        vector  >= 0.6 && < 0.12
+    Exposed-Modules: Succinct.Vector
+    GHC-Options: -O2 -Wall
+    Default-Language: Haskell2010
+
+Test-Suite tests
+    Type: exitcode-stdio-1.0
+    HS-Source-Dirs: test
+    Main-Is: Main.hs
+    GHC-Options: -O2 -Wall
+    Default-Language: Haskell2010
+    Build-Depends:
+        base            >= 4      && < 5   ,
+        doctest         >= 0.9.12 && < 0.11,
+        QuickCheck      >= 2.8    && < 2.9 ,
+        template-haskell,
+        succinct-vector
+
+Benchmark bench
+    Type: exitcode-stdio-1.0
+    HS-Source-Dirs: bench
+    Main-Is: Main.hs
+    GHC-Options: -O2 -Wall
+    Default-Language: Haskell2010
+    Build-Depends:
+        base            >= 4       && < 5   ,
+        criterion       >= 1.1.0.0 && < 1.2 ,
+        succinct-vector                     ,
+        vector          >= 0.6     && < 0.12
