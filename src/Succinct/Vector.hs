@@ -12,6 +12,10 @@ Just 27
 >>> rank idx 128
 Just 64
 
+    This module is based on the paper "Broadword Implementation of Rank/Select
+    Queries":
+
+    <http://vigna.di.unimi.it/ftp/papers/Broadword.pdf>
 -}
 
 module Succinct.Vector (
