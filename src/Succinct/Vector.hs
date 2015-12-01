@@ -67,11 +67,11 @@ index i n =
     The `SuccinctBitVector` increases the original bit vector's size by 25%
 -}
 data SuccinctBitVector = SuccinctBitVector
-    { size :: {-# UNPACK #-} !Int
+    { size  :: {-# UNPACK #-} !Int
     -- ^ Size of original bit vector, in bits
-    , idx  :: {-# UNPACK #-} !(Primitive.Vector Word64)
+    , rank9 :: {-# UNPACK #-} !(Primitive.Vector Word64)
     -- ^ Two-level index of cached rank calculations at Word64 boundaries
-    , bits :: {-# UNPACK #-} !(Primitive.Vector Word64)
+    , bits  :: {-# UNPACK #-} !(Primitive.Vector Word64)
     -- ^ Original bit vector
     }
 
@@ -99,9 +99,9 @@ popCount x0 = Bits.unsafeShiftR (x3 * 0x0101010101010101) 56
 -}
 prepare :: Primitive.Vector Word64 -> SuccinctBitVector
 prepare v = SuccinctBitVector
-    { size = len * 64
-    , idx  = Primitive.unfoldrN iLen iStep iBegin
-    , bits = v
+    { size  = len * 64
+    , rank9 = Primitive.unfoldrN iLen iStep iBegin
+    , bits  = v
     }
   where
     len = Primitive.length v
@@ -150,15 +150,15 @@ prepare v = SuccinctBitVector
     This will silently fail and return garbage if you supply an invalid index
 -}
 unsafeRank :: SuccinctBitVector -> Int -> Word64
-unsafeRank (SuccinctBitVector _ idx_ bits_) p =
+unsafeRank (SuccinctBitVector _ rank9_ bits_) p =
         f
     +   ((Bits.unsafeShiftR s (fromIntegral ((t + (Bits.unsafeShiftR t 60 .&. 0x8)) * 9))) .&. 0x1FF)
     +   popCount (Primitive.unsafeIndex bits_ w .&. mask)
   where
     (w, b) = quotRem p 64
     (q, r) = quotRem w 8
-    f      = Primitive.unsafeIndex idx_ (2 * q    )
-    s      = Primitive.unsafeIndex idx_ (2 * q + 1)
+    f      = Primitive.unsafeIndex rank9_ (2 * q    )
+    s      = Primitive.unsafeIndex rank9_ (2 * q + 1)
     t      = fromIntegral (r - 1) :: Word64
     mask   = negate (Bits.shiftL 0x1 (64 - b))
 
