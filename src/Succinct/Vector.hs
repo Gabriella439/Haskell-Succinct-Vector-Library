@@ -168,17 +168,18 @@ prepare v = SuccinctBitVector
         ( Unboxed.map (\(_, i) -> i)
         ( Unboxed.filter (\(j, _) -> j `rem` 512 == 0)
         ( Unboxed.imap (,)
-        ( oneIndices
+        ( oneIndices 0 (Unboxed.length v)
           v ))))
 
-    oneIndices :: Unboxed.Vector Word64 -> Unboxed.Vector Int
-    oneIndices v =
+    oneIndices :: Int -> Int -> Unboxed.Vector Word64 -> Unboxed.Vector Int
+    oneIndices i1 i2 v =
           Unboxed.map (\(i, _) -> i)
         ( Unboxed.filter (\(_, b) -> b)
         ( Unboxed.imap (,)
+        ( Unboxed.unsafeSlice i1 (i2 - i1)
         ( Unboxed.concatMap (\w64 ->
             Unboxed.generate 64 (Bits.testBit w64) )
-          v )))
+          v ))))
     {-# INLINE oneIndices #-}
 
     count :: Int -> Word64
@@ -236,8 +237,7 @@ prepare v = SuccinctBitVector
                                  in  w64
                             else 0 )
                     | numBasicBlocks < 128 ->
-                        let ones =
-                                oneIndices (Unboxed.unsafeSlice p (q - p) v)
+                        let ones = oneIndices p q v
                         in  Unboxed.generate span (\i ->
                                 let w16 j = fromIntegral (locate ones (4 * i + j))
                                     w64 =                      w16 0
@@ -246,16 +246,14 @@ prepare v = SuccinctBitVector
                                         .|. Bits.unsafeShiftL (w16 3) 48
                                 in  w64 )
                     | numBasicBlocks < 256 ->
-                        let ones =
-                                oneIndices (Unboxed.unsafeSlice p (q - p) v)
+                        let ones = oneIndices p q v
                         in  Unboxed.generate span (\i ->
                                 let w32 j = fromIntegral (locate ones (2 * i + j))
                                     w64 =                      w32 0
                                         .|. Bits.unsafeShiftL (w32 1) 32
                                 in  w64 )
                     | otherwise ->
-                        let ones =
-                                oneIndices (Unboxed.unsafeSlice p (q - p) v)
+                        let ones = oneIndices p q v
                         in  Unboxed.generate span (\i ->
                                 let w64 = fromIntegral (p + locate ones i)
                                 in  w64 ) )
