@@ -1,6 +1,6 @@
 {-| Example usage of this module:
 
->>> import Data.Vector.Primitive
+>>> import Data.Vector.Unboxed
 >>> let v = fromList [maxBound, 0] :: Vector Word64
 >>> let sbv = prepare v
 >>> index sbv 63
@@ -30,21 +30,19 @@ module Succinct.Vector (
     , unsafeRank
     ) where
 
--- TODO: Use `Unboxed` vectors instead of `Primitive`?
 -- TODO: Compress original bit vector
 
 import Control.DeepSeq (NFData(..))
 import Data.Bits ((.|.), (.&.))
 import Data.Word (Word16, Word64)
 
-import qualified Data.Bits             as Bits
-import qualified Data.Vector.Generic   as Generic
-import qualified Data.Vector.Primitive as Primitive
-import qualified Data.Vector.Unboxed   as Unboxed
+import qualified Data.Bits           as Bits
+import qualified Data.Vector.Generic as Generic
+import qualified Data.Vector.Unboxed as Unboxed
 
 -- $setup
 -- >>> :set -XScopedTypeVariables
--- >>> import Data.Vector.Primitive as Primitive
+-- >>> import Data.Vector.Unboxed as Unboxed
 -- >>> import Test.QuickCheck
 -- >>> instance (Prim a, Arbitrary a) => Arbitrary (Vector a) where arbitrary = fmap fromList arbitrary
 
@@ -56,7 +54,7 @@ unsafeIndex :: SuccinctBitVector -> Int -> Bool
 unsafeIndex i n = Bits.testBit w8 r
   where
     (q, r) = quotRem n 64
-    w8 = Primitive.unsafeIndex (bits i) q
+    w8 = Unboxed.unsafeIndex (bits i) q
 
 
 -- | @(index i n)@ retrieves the bit at the index @n@
@@ -74,11 +72,11 @@ index i n =
 data SuccinctBitVector = SuccinctBitVector
     { size    :: !Int
     -- ^ Size of original bit vector, in bits
-    , rank9   :: !(Primitive.Vector Word64)
+    , rank9   :: !(Unboxed.Vector Word64)
     -- ^ Two-level index of cached rank calculations at Word64 boundaries
     , select9 :: !Select9
     -- ^ Primary and secondary inventory used for select calculations
-    , bits    :: !(Primitive.Vector Word64)
+    , bits    :: !(Unboxed.Vector Word64)
     -- ^ Original bit vector
     } deriving (Show)
 
@@ -104,12 +102,12 @@ popCount x0 = Bits.unsafeShiftR (x3 * 0x0101010101010101) 56
     x2 = (x1 .&. 0x3333333333333333) + ((Bits.unsafeShiftR x1 2) .&. 0x3333333333333333)
     x3 = (x2 + (Bits.unsafeShiftR x2 4)) .&. 0x0F0F0F0F0F0F0F0F
 
-{-| Create an `SuccinctBitVector` from a `Primitive.Vector` of bits packed as
+{-| Create an `SuccinctBitVector` from a `Unboxed.Vector` of bits packed as
     `Word64`s
 
     You are responsible for padding your data to the next `Word64` boundary
 -}
-prepare :: Primitive.Vector Word64 -> SuccinctBitVector
+prepare :: Unboxed.Vector Word64 -> SuccinctBitVector
 prepare v = SuccinctBitVector
     { size    = lengthInBits
     , rank9   = vRank
@@ -119,12 +117,12 @@ prepare v = SuccinctBitVector
   where
     lengthInBits = len * 64
 
-    len = Primitive.length v
+    len = Unboxed.length v
 
     -- TODO: What happens if `len == 0`?
     vRankLen = 2 * (((len - 1) `div` 8) + 1) + 1
 
-    vRank = Primitive.unfoldrN vRankLen iStep iBegin
+    vRank = Unboxed.unfoldrN vRankLen iStep iBegin
       where
         iStep (Status level r i0) = Just (case level of
             First  -> (r , Status Second r       i0)
@@ -141,7 +139,7 @@ prepare v = SuccinctBitVector
 
                 count i =
                     if i < len
-                    then popCount (Primitive.unsafeIndex v i)
+                    then popCount (Unboxed.unsafeIndex v i)
                     else 0
 
                 r1 =      count i0
@@ -166,27 +164,28 @@ prepare v = SuccinctBitVector
     -- TODO: Check to see if point-free style interferes with fusion
     v1 :: Unboxed.Vector Int
     v1 =
-        ( flip Unboxed.snoc lengthInBits
-        . Unboxed.map (\(_, i) -> i)
-        . Unboxed.filter (\(j, _) -> j `rem` 512 == 0)
-        . Unboxed.imap (,)
-        . oneIndices
-        ) v
+          flip Unboxed.snoc lengthInBits
+        ( Unboxed.map (\(_, i) -> i)
+        ( Unboxed.filter (\(j, _) -> j `rem` 512 == 0)
+        ( Unboxed.imap (,)
+        ( oneIndices
+          v ))))
 
-    oneIndices :: Primitive.Vector Word64 -> Unboxed.Vector Int
-    oneIndices =
+    oneIndices :: Unboxed.Vector Word64 -> Unboxed.Vector Int
+    oneIndices v =
           Unboxed.map (\(i, _) -> i)
-        . Unboxed.filter (\(_, b) -> b)
-        . Unboxed.imap (,)
-        . Unboxed.concatMap (\w64 ->
+        ( Unboxed.filter (\(_, b) -> b)
+        ( Unboxed.imap (,)
+        ( Unboxed.concatMap (\w64 ->
             Unboxed.generate 64 (Bits.testBit w64) )
-        . Generic.convert
+          v )))
+    {-# INLINE oneIndices #-}
 
     count :: Int -> Word64
     count basicBlockIndex =
         let i = basicBlockIndex * 2
-        in  if i < Primitive.length vRank
-            then Primitive.unsafeIndex vRank i
+        in  if i < Unboxed.length vRank
+            then Unboxed.unsafeIndex vRank i
             else fromIntegral (maxBound :: Word16)
 
     -- TODO: What if the vector is empty?
@@ -238,7 +237,7 @@ prepare v = SuccinctBitVector
                             else 0 )
                     | numBasicBlocks < 128 ->
                         let ones =
-                                oneIndices (Primitive.unsafeSlice p (q - p) v)
+                                oneIndices (Unboxed.unsafeSlice p (q - p) v)
                         in  Unboxed.generate span (\i ->
                                 let w16 j = fromIntegral (locate ones (4 * i + j))
                                     w64 =                      w16 0
@@ -248,7 +247,7 @@ prepare v = SuccinctBitVector
                                 in  w64 )
                     | numBasicBlocks < 256 ->
                         let ones =
-                                oneIndices (Primitive.unsafeSlice p (q - p) v)
+                                oneIndices (Unboxed.unsafeSlice p (q - p) v)
                         in  Unboxed.generate span (\i ->
                                 let w32 j = fromIntegral (locate ones (2 * i + j))
                                     w64 =                      w32 0
@@ -256,7 +255,7 @@ prepare v = SuccinctBitVector
                                 in  w64 )
                     | numBasicBlocks < 512 ->
                         let ones =
-                                oneIndices (Primitive.unsafeSlice p (q - p) v)
+                                oneIndices (Unboxed.unsafeSlice p (q - p) v)
                         in  Unboxed.generate span (\i ->
                                 let w64 = fromIntegral (p + locate ones i)
                                 in  w64 ) )
@@ -270,12 +269,12 @@ unsafeRank :: SuccinctBitVector -> Int -> Word64
 unsafeRank (SuccinctBitVector _ rank9_ _ bits_) p =
         f
     +   ((Bits.unsafeShiftR s (fromIntegral ((t + (Bits.unsafeShiftR t 60 .&. 0x8)) * 9))) .&. 0x1FF)
-    +   popCount (Primitive.unsafeIndex bits_ w .&. mask)
+    +   popCount (Unboxed.unsafeIndex bits_ w .&. mask)
   where
     (w, b) = quotRem p 64
     (q, r) = quotRem w 8
-    f      = Primitive.unsafeIndex rank9_ (2 * q    )
-    s      = Primitive.unsafeIndex rank9_ (2 * q + 1)
+    f      = Unboxed.unsafeIndex rank9_ (2 * q    )
+    s      = Unboxed.unsafeIndex rank9_ (2 * q + 1)
     t      = fromIntegral (r - 1) :: Word64
     mask   = negate (Bits.shiftL 0x1 (64 - b))
 
@@ -289,7 +288,7 @@ Just 2
     returns the total number of ones in the bit vector
 
 prop> rank (prepare v) 0 == Just 0
-prop> let sv = prepare v in rank sv (size sv) == Just (Primitive.sum (Primitive.map popCount v))
+prop> let sv = prepare v in rank sv (size sv) == Just (Unboxed.sum (Unboxed.map popCount v))
 
     This returns a valid value wrapped in a `Just` when:
 
