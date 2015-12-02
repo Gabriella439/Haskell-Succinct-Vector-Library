@@ -253,7 +253,7 @@ prepare v = SuccinctBitVector
                                     w64 =                      w32 0
                                         .|. Bits.unsafeShiftL (w32 1) 32
                                 in  w64 )
-                    | numBasicBlocks < 512 ->
+                    | otherwise ->
                         let ones =
                                 oneIndices (Unboxed.unsafeSlice p (q - p) v)
                         in  Unboxed.generate span (\i ->
