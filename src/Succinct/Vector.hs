@@ -226,7 +226,7 @@ prepare v = SuccinctBitVector
                                          .|. Bits.unsafeShiftL (w16 2) 32
                                          .|. Bits.unsafeShiftL (w16 3) 48
                                  in  w64
-                             else 0 )
+                            else 0 )
                     | numBasicBlocks < 64 ->
                         Unboxed.generate span (\i ->
                                  if  i < 2
