@@ -163,16 +163,6 @@ prepare v = SuccinctBitVector
 
         iBegin = Status First 0 0
 
-    bitIndices :: Unboxed.Vector Int
-    bitIndices =
-        ( Unboxed.map (\(i, _) -> i)
-        . Unboxed.filter (\(_, b) -> b)
-        . Unboxed.imap (,)
-        . Unboxed.concatMap (\w64 ->
-            Unboxed.generate 64 (Bits.testBit w64) )
-        . Generic.convert
-        ) v
-
     -- TODO: Check to see if point-free style interferes with fusion
     v1 :: Unboxed.Vector Int
     v1 =
