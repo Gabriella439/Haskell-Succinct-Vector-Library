@@ -86,8 +86,8 @@ instance NFData SuccinctBitVector where
     rnf i = i `seq` ()
 
 data Select9 = Select9
-    { primary   :: Unboxed.Vector Int
-    , secondary :: Unboxed.Vector Word64
+    { primary   :: !(Unboxed.Vector Int)
+    , secondary :: !(Unboxed.Vector Word64)
     } deriving (Show)
 
 data Level = First | Second
