@@ -49,7 +49,9 @@ import qualified Data.Vector.Unboxed as Unboxed
 -- >>> :set -XScopedTypeVariables
 -- >>> import Data.Vector.Unboxed as Unboxed
 -- >>> import Test.QuickCheck
--- >>> instance (Prim a, Arbitrary a) => Arbitrary (Vector a) where arbitrary = fmap fromList arbitrary
+-- >>> instance (Unbox a, Arbitrary a) => Arbitrary (Vector a) where arbitrary = fmap fromList arbitrary
+-- >>> instance Arbitrary Count where arbitrary = fmap Count arbitrary
+-- >>> instance Arbitrary Position where arbitrary = fmap Position arbitrary
 
 {-| Like `index` except that the bit index is not checked
 
@@ -147,7 +149,7 @@ newtype Position = Position { getPosition :: Int } deriving (Eq, Num, Ord)
 instance Show Position where
     show (Position n) = show n
 
-newtype Count = Count { getCount :: Word64 } deriving (Num)
+newtype Count = Count { getCount :: Word64 } deriving (Eq, Num, Ord)
 
 instance Show Count where
     show (Count w64) = show w64
@@ -445,7 +447,7 @@ Just 2
     returns the total number of ones in the bit vector
 
 prop> rank (prepare v) 0 == Just 0
-prop> let sv = prepare v in rank sv (size sv) == Just (Unboxed.sum (Unboxed.map popCount v))
+prop> let sv = prepare v in fmap getCount (rank sv (size sv)) == Just (Unboxed.sum (Unboxed.map (getCount . popCount) v))
 
     This returns a valid value wrapped in a `Just` when:
 
