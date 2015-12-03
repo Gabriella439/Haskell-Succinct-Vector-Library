@@ -1,3 +1,5 @@
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+
 {-| Example usage of this module:
 
 >>> import Data.Vector.Unboxed
@@ -24,6 +26,8 @@ module Succinct.Vector (
     , prepare
 
     -- * Queries
+    , Position
+    , Count
     , index
     , unsafeIndex
     , rank
@@ -33,8 +37,9 @@ module Succinct.Vector (
 -- TODO: Compress original bit vector
 
 import Control.DeepSeq (NFData(..))
-import Data.Bits ((.|.), (.&.))
+import Data.Bits (Bits, (.|.), (.&.), xor, complement)
 import Data.Word (Word16, Word64)
+import Prelude hiding ((>>))  -- Use `(>>)` for right bit shift in this module
 
 import qualified Data.Bits           as Bits
 import qualified Data.Vector.Generic as Generic
@@ -50,15 +55,15 @@ import qualified Data.Vector.Unboxed as Unboxed
 
     This will silently fail and return garbage if you supply an invalid index
 -}
-unsafeIndex :: SuccinctBitVector -> Int -> Bool
+unsafeIndex :: SuccinctBitVector -> Position -> Bool
 unsafeIndex i n = Bits.testBit w8 r
   where
-    (q, r) = quotRem n 64
+    (q, r) = quotRem (getPosition n) 64
     w8 = Unboxed.unsafeIndex (bits i) q
 
 
 -- | @(index i n)@ retrieves the bit at the index @n@
-index :: SuccinctBitVector -> Int -> Maybe Bool
+index :: SuccinctBitVector -> Position -> Maybe Bool
 index i n =
     if 0 <= n && n < size i
     then Just (unsafeIndex i n)
@@ -70,7 +75,7 @@ index i n =
     The `SuccinctBitVector` increases the original bit vector's size by 25%
 -}
 data SuccinctBitVector = SuccinctBitVector
-    { size    :: !Int
+    { size    :: !Position
     -- ^ Size of original bit vector, in bits
     , rank9   :: !(Unboxed.Vector Word64)
     -- ^ Two-level index of cached rank calculations at Word64 boundaries
@@ -92,15 +97,168 @@ data Level = First | Second
 
 data Status = Status
                    !Level
-    {-# UNPACK #-} !Word64  -- Current rank
-    {-# UNPACK #-} !Int     -- Position in vector
+    {-# UNPACK #-} !Count
+    {-# UNPACK #-} !Position
 
-popCount :: Word64 -> Word64
-popCount x0 = Bits.unsafeShiftR (x3 * 0x0101010101010101) 56
+(>>) :: Bits a => a -> Int -> a
+(>>) = Bits.unsafeShiftR
+{-# INLINE (>>) #-}
+
+(<<) :: Bits a => a -> Int -> a
+(<<) = Bits.unsafeShiftL
+{-# INLINE (<<) #-}
+
+l8 :: Word64
+l8 = 0x0101010101010101
+{-# INLINE l8 #-}
+
+h8 :: Word64
+h8 = 0x8080808080808080
+{-# INLINE h8 #-}
+
+l9 :: Word64
+l9 = 0x0040201008040201
+{-# INLINE l9 #-}
+
+h9 :: Word64
+h9 = 0x4020100804020100
+{-# INLINE h9 #-}
+
+le8 :: Word64 -> Word64 -> Word64
+x `le8` y
+    = (((y .|. h8) - (x .&. complement h8)) `xor` x `xor` y) .&. h8
+{-# INLINE le8 #-}
+
+lt8 :: Word64 -> Word64 -> Word64
+x `lt8` y
+    = (((x .|. h8) - (y .&. complement h8)) `xor` x `xor` complement y) .&. h8
+{-# INLINE lt8 #-}
+
+leu9 :: Word64 -> Word64 -> Word64
+x `leu9` y
+    =   (     (((y .|. h9) - (x .&. complement h9)) .|. (x `xor` y))
+        `xor` (x .&. complement y)
+        )
+    .&. h9
+{-# INLINE leu9 #-}
+
+newtype Position = Position { getPosition :: Int } deriving (Eq, Num, Ord)
+
+instance Show Position where
+    show (Position n) = show n
+
+newtype Count = Count { getCount :: Word64 } deriving (Num)
+
+instance Show Count where
+    show (Count w64) = show w64
+
+{-| Count how many ones there are in the given `Word64`
+
+    This is faster than `Data.Bits.popCount`
+-}
+popCount :: Word64 -> Count
+popCount x0 = Count ((x3 * 0x0101010101010101) >> 56)
   where
-    x1 = x0 - (Bits.unsafeShiftR (x0 .&. 0xAAAAAAAAAAAAAAAA) 1)
-    x2 = (x1 .&. 0x3333333333333333) + ((Bits.unsafeShiftR x1 2) .&. 0x3333333333333333)
-    x3 = (x2 + (Bits.unsafeShiftR x2 4)) .&. 0x0F0F0F0F0F0F0F0F
+    x1 = x0 - ((x0 .&. 0xAAAAAAAAAAAAAAAA) >> 1)
+    x2 = (x1 .&. 0x3333333333333333) + ((x1 >> 2) .&. 0x3333333333333333)
+    x3 = (x2 + (x2 >> 4)) .&. 0x0F0F0F0F0F0F0F0F
+{-  IMPLEMENTATION NOTES:
+
+    This is "Algorithm 1" from this paper:
+
+> Vigna, Sebastiano. "Broadword implementation of rank/select queries." Experimental Algorithms. Springer Berlin Heidelberg, 2008. 154-168.
+-}
+{-# INLINE popCount #-}
+
+unsafeRank64 :: Word64 -> Position -> Count
+unsafeRank64 w64 (Position n) =
+    popCount (w64 .&. negate (Bits.shiftL 0x1 (64 - n)))
+{-  IMPLEMENTATION NOTES:
+
+    Do not use `(<<)`/`Bits.unsafeShiftL` because they do not properly handle
+    shifting by 64 bits when `n = 0`
+-}
+{-# INLINE unsafeRank64 #-}
+
+{-| @(unsafeSelectWord64 w64 n)@ computes the index of the `n`-th one in `w64`
+    or return 72s if there is no such one present
+
+    `n` is 0-indexed, meaning that `n = 0` searches for the first one in `w64`
+
+    Similarly, the result is 0-indexed, meaning that a result of 0 points to the
+    first bit of `w64`
+
+    Precondition:
+
+> n < 64
+
+    If you violate the precondition this function may silently fail and return
+    garbage
+-}
+unsafeSelect64 :: Word64 -> Count -> (Position, Count)
+unsafeSelect64 x (Count r) =
+    (Position (fromIntegral (b + ((((s3 `le8` (l * l8)) >> 7) * l8) >> 56))), 1)
+  where
+    s0 = x - ((x .&. 0xAAAAAAAAAAAAAAAA) >> 1)
+    s1 = (s0 .&. 0x3333333333333333) + ((s0 >> 2) .&. 0x3333333333333333)
+    s2 = ((s1 + (s1 >> 4)) .&. 0x0F0F0F0F0F0F0F0F) * l8
+    b  = ((((s2 `le8` (r * l8)) >> 7) * l8) >> 53) .&. 0xFFFFFFFFFFFFFFF8
+    b' = fromIntegral b
+    l  = r - (((s2 << 8) >> b') .&. 0xFF)
+    s3 = ((0x0 `lt8` (((x >> b' .&. 0xFF) * l8) .&. 0x8040201008040201)) >> 0x7) * l8
+{-  IMPLEMENTATION NOTES:
+
+    This is "Algorithm 2" from this paper:
+
+> Vigna, Sebastiano. "Broadword implementation of rank/select queries." Experimental Algorithms. Springer Berlin Heidelberg, 2008. 154-168.
+
+    There was a typo in the original paper.  Line 1 of the original
+    "Algorithm 2" has:
+
+> 1  s = (s & 0x3333333333333333) + ((x >> 2) & 0x3333333333333333)
+
+    ... but should have instead been:
+
+> 1  s = (s & 0x3333333333333333) + ((s >> 2) & 0x3333333333333333)
+-}
+{-# INLINE unsafeSelect64 #-}
+
+{-| A non-decreasing list of 7 9-bit counts, packed into one `Word64`
+
+    Bits are 0-indexed and ordered from the least significant (bit #0) to the
+    most significant (bit #63):
+
+    Bits #00-08: Word #0
+    Bits #09-17: Word #1
+    Bits #18-26: Word #2
+    Bits #27-35: Word #3
+    Bits #36-44: Word #4
+    Bits #45-53: Word #5
+    Bits #54-62: Word #6
+    Bit  #64   : 0
+-}
+newtype Word9x7 = Word9x7 Word64 deriving (Num)
+
+instance Show Word9x7 where
+    show (Word9x7 w64) = show w64
+
+{-| @(unsafeRank9x7 w9x7 i)@ gets the @i@-th 9-bit number stored in @w@ where
+    the 1st 9-bit (@i = 1@) is stored in the least significant 9 bits
+
+    Assumptions:
+
+    * @i < 8@
+
+    This always returns `0` for the case where @i = 0@
+
+> unsafeRank9x7 w 0 = 0
+-}
+unsafeRank9x7 :: Word9x7 -> Position -> Count
+unsafeRank9x7 (Word9x7 s) (Position i) =
+    Count ((s >> (fromIntegral (t + ((t >> 60) .&. 8)) * 9)) .&. 0x1FF)
+  where
+    t = i - 1
+{-# INLINE unsafeRank9x7 #-}
 
 {-| Create an `SuccinctBitVector` from a `Unboxed.Vector` of bits packed as
     `Word64`s
@@ -109,7 +267,7 @@ popCount x0 = Bits.unsafeShiftR (x3 * 0x0101010101010101) 56
 -}
 prepare :: Unboxed.Vector Word64 -> SuccinctBitVector
 prepare v = SuccinctBitVector
-    { size    = lengthInBits
+    { size    = Position lengthInBits
     , rank9   = vRank
     , select9 = Select9 v1 v2
     , bits    = v
@@ -125,8 +283,8 @@ prepare v = SuccinctBitVector
     vRank = Unboxed.unfoldrN vRankLen iStep iBegin
       where
         iStep (Status level r i0) = Just (case level of
-            First  -> (r , Status Second r       i0)
-            Second -> (r', Status First (r + r8) i8) )
+            First  -> (getCount r , Status Second r       i0)
+            Second -> (         r', Status First (r + r8) i8) )
               where
                 i1 = i0 + 1
                 i2 = i1 + 1
@@ -137,9 +295,10 @@ prepare v = SuccinctBitVector
                 i7 = i6 + 1
                 i8 = i7 + 1
 
+                count :: Position -> Count
                 count i =
-                    if i < len
-                    then popCount (Unboxed.unsafeIndex v i)
+                    if i < Position len
+                    then popCount (Unboxed.unsafeIndex v (getPosition i))
                     else 0
 
                 r1 =      count i0
@@ -151,13 +310,13 @@ prepare v = SuccinctBitVector
                 r7 = r6 + count i6
                 r8 = r7 + count i7
 
-                r' = r1
-                 .|. Bits.unsafeShiftL r2  9
-                 .|. Bits.unsafeShiftL r3 18
-                 .|. Bits.unsafeShiftL r4 27
-                 .|. Bits.unsafeShiftL r5 36
-                 .|. Bits.unsafeShiftL r6 45
-                 .|. Bits.unsafeShiftL r7 54
+                r' = getCount r1
+                 .|. getCount r2 <<  9
+                 .|. getCount r3 << 18
+                 .|. getCount r4 << 27
+                 .|. getCount r5 << 36
+                 .|. getCount r6 << 45
+                 .|. getCount r7 << 54
 
         iBegin = Status First 0 0
 
@@ -211,10 +370,10 @@ prepare v = SuccinctBitVector
                                  if  i < 2
                             then let w16 j = count (basicBlockBegin + 4 * i + j)
                                            - count basicBlockBegin
-                                     w64   =                    w16 0
-                                         .|. Bits.unsafeShiftL (w16 1) 16
-                                         .|. Bits.unsafeShiftL (w16 2) 32
-                                         .|. Bits.unsafeShiftL (w16 3) 48
+                                     w64   =  w16 0
+                                         .|. (w16 1 << 16)
+                                         .|. (w16 2 << 32)
+                                         .|. (w16 3 << 48)
                                  in  w64
                             else 0 )
                     | numBasicBlocks < 64 ->
@@ -222,35 +381,35 @@ prepare v = SuccinctBitVector
                                  if  i < 2
                             then let w16 j = count (basicBlockBegin + 8 * (4 * i + j))
                                            - count basicBlockBegin
-                                     w64   =                    w16 0
-                                         .|. Bits.unsafeShiftL (w16 1) 16
-                                         .|. Bits.unsafeShiftL (w16 2) 32
-                                         .|. Bits.unsafeShiftL (w16 3) 48
+                                     w64   =  w16 0
+                                         .|. (w16 1 << 16)
+                                         .|. (w16 2 << 32)
+                                         .|. (w16 3 << 48)
                                  in  w64
                             else if  i < 18
                             then let w16 j = count (basicBlockBegin + 4 * (i - 2) + j)
                                            - count basicBlockBegin
-                                     w64   =                    w16 0
-                                         .|. Bits.unsafeShiftL (w16 1) 16
-                                         .|. Bits.unsafeShiftL (w16 2) 32
-                                         .|. Bits.unsafeShiftL (w16 3) 48
+                                     w64   =  w16 0
+                                         .|. (w16 1 << 16)
+                                         .|. (w16 2 << 32)
+                                         .|. (w16 3 << 48)
                                  in  w64
                             else 0 )
                     | numBasicBlocks < 128 ->
                         let ones = oneIndices p q v
                         in  Unboxed.generate span (\i ->
                                 let w16 j = fromIntegral (locate ones (4 * i + j))
-                                    w64 =                      w16 0
-                                        .|. Bits.unsafeShiftL (w16 1) 16
-                                        .|. Bits.unsafeShiftL (w16 2) 32
-                                        .|. Bits.unsafeShiftL (w16 3) 48
+                                    w64 =    w16 0
+                                        .|. (w16 1 << 16)
+                                        .|. (w16 2 << 32)
+                                        .|. (w16 3 << 48)
                                 in  w64 )
                     | numBasicBlocks < 256 ->
                         let ones = oneIndices p q v
                         in  Unboxed.generate span (\i ->
                                 let w32 j = fromIntegral (locate ones (2 * i + j))
-                                    w64 =                      w32 0
-                                        .|. Bits.unsafeShiftL (w32 1) 32
+                                    w64 =    w32 0
+                                        .|. (w32 1 << 32)
                                 in  w64 )
                     | otherwise ->
                         let ones = oneIndices p q v
@@ -263,11 +422,11 @@ prepare v = SuccinctBitVector
 
     This will silently fail and return garbage if you supply an invalid index
 -}
-unsafeRank :: SuccinctBitVector -> Int -> Word64
-unsafeRank (SuccinctBitVector _ rank9_ _ bits_) p =
-        f
-    +   ((Bits.unsafeShiftR s (fromIntegral ((t + (Bits.unsafeShiftR t 60 .&. 0x8)) * 9))) .&. 0x1FF)
-    +   popCount (Unboxed.unsafeIndex bits_ w .&. mask)
+unsafeRank :: SuccinctBitVector -> Position -> Count
+unsafeRank (SuccinctBitVector _ rank9_ _ bits_) (Position p) =
+        Count f
+    +   unsafeRank9x7 (Word9x7 s) (Position r)
+    +   unsafeRank64 (Unboxed.unsafeIndex bits_ w) (Position b)
   where
     (w, b) = quotRem p 64
     (q, r) = quotRem w 8
@@ -296,7 +455,7 @@ prop> let sv = prepare v in rank sv (size sv) == Just (Unboxed.sum (Unboxed.map 
 
 prop> let sv = prepare v in (0 <= n && n <= size sv) || (rank sv n == Nothing)
 -}
-rank :: SuccinctBitVector -> Int -> Maybe Word64
+rank :: SuccinctBitVector -> Position -> Maybe Count
 rank i p =
     if 0 <= p && p <= size i
     then Just (unsafeRank i p)
