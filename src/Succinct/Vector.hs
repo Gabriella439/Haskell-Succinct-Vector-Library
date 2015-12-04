@@ -4,14 +4,14 @@
 
 >>> import Data.Vector.Unboxed
 >>> let v = fromList [maxBound, 0] :: Vector Word64
->>> let sbv = prepare v
->>> index sbv 63
+>>> let bv = prepare v
+>>> index bv 63
 Just True
->>> index sbv 64
+>>> index bv 64
 Just False
->>> safeRank sbv 27
+>>> safeRank bv 27
 Just 27
->>> safeRank sbv 128
+>>> safeRank bv 128
 Just 64
 
     This module is based on the paper "Broadword Implementation of Rank/Select
@@ -30,7 +30,8 @@ module Succinct.Vector (
     , Count(..)
     , SuccinctBitVector(..)
     , index
-    , safeRank
+    , rank
+    , select
     ) where
 
 -- TODO: Compress original bit vector
@@ -38,6 +39,7 @@ module Succinct.Vector (
 
 import Control.DeepSeq (NFData(..))
 import Data.Bits (Bits, (.|.), (.&.), xor, complement)
+import Data.Foldable (toList)
 import Data.Word (Word16, Word64)
 import Prelude hiding ((>>))  -- Use `(>>)` for right bit shift in this module
 
@@ -189,15 +191,14 @@ popCount x0 = Count ((x3 * 0x0101010101010101) >> 56)
 {-# INLINE popCount #-}
 
 class SuccinctBitVector v where
-    rank   :: v -> Position -> (Count   , Position)
-    select :: v -> Count    -> (Position, Count   )
+    partialRank   :: v -> Position -> (Count   , Position)
+    partialSelect :: v -> Count    -> (Position, Count   )
 
 instance SuccinctBitVector Word64 where
-    rank w64 (Position n) =
-        (popCount (w64 .&. ((0x1 << n) - 1)), 0)
-    {-# INLINE rank #-}
+    partialRank w64 (Position n) = (popCount (w64 .&. ((0x1 << n) - 1)), 0)
+    {-# INLINE partialRank #-}
 
-    select x (Count r) =
+    partialSelect x (Count r) =
         (Position (fromIntegral (b + ((((s3 `le8` (l * l8)) >> 7) * l8) >> 56))), 0)
       where
         s0 = x - ((x .&. 0xAAAAAAAAAAAAAAAA) >> 1)
@@ -207,7 +208,7 @@ instance SuccinctBitVector Word64 where
         b' = fromIntegral b
         l  = r - (((s2 << 8) >> b') .&. 0xFF)
         s3 = ((0x0 `lt8` (((x >> b' .&. 0xFF) * l8) .&. 0x8040201008040201)) >> 0x7) * l8
-    {-# INLINE select #-}
+    {-# INLINE partialSelect #-}
     {-  IMPLEMENTATION NOTES:
 
         This is "Algorithm 2" from this paper:
@@ -241,34 +242,34 @@ instance SuccinctBitVector Word64 where
 newtype BasicBlock = BasicBlock Word64 deriving (Num, Show)
 
 instance SuccinctBitVector BasicBlock where
-    rank (BasicBlock s) (Position i) =
+    partialRank (BasicBlock s) (Position i) =
         (Count ((s >> (fromIntegral (t + ((t >> 60) .&. 8)) * 9)) .&. 0x1FF), Position q)
       where
         (p, q) = i `quotRem` 64
 
         t = p - 1
-    {-# INLINE rank #-}
+    {-# INLINE partialRank #-}
 
-    select (BasicBlock s) (Count r) = (Position (64 * o), Count r')
+    partialSelect (BasicBlock s) (Count r) = (Position (64 * o), Count r')
       where
         o  = fromIntegral (((((s `leu9` (r * l9)) >> 8) * l9) >> 54) .&. 7)
         r' = r - ((s >> fromIntegral (((o - 1) .&. 7) * 9)) .&. 0x1FF)
-    {-# INLINE select #-}
+    {-# INLINE partialSelect #-}
 
-unsafeRankLevel0 :: Unboxed.Vector Word64 -> Position -> (Count, Position)
-unsafeRankLevel0 v (Position i) = (Count n, Position q)
+partialRankLevel0 :: Unboxed.Vector Word64 -> Position -> (Count, Position)
+partialRankLevel0 v (Position i) = (Count n, Position q)
   where
     n = Unboxed.unsafeIndex v (p * 2)
 
     (p, q) = i `quotRem` 512
-{-# INLINE unsafeRankLevel0 #-}
+{-# INLINE partialRankLevel0 #-}
 
 newtype IntermediateBlock = IntermediateBlock
     { getIntermediateBlock :: Unboxed.Vector Word64
     } deriving (Show)
 
 instance SuccinctBitVector IntermediateBlock where
-    rank (IntermediateBlock w64s) (Position i) = (Count r, Position i')
+    partialRank (IntermediateBlock w64s) (Position i) = (Count r, Position i')
       where
         (basicBlockIndex, i') = i `quotRem` 512
 
@@ -277,9 +278,9 @@ instance SuccinctBitVector IntermediateBlock where
         w64 = Unboxed.unsafeIndex w64s vectorIndex
 
         r = (w64 >> (w16Index << 4)) .&. 0xFFFF
-    {-# INLINE rank #-}
+    {-# INLINE partialRank #-}
 
-    select (IntermediateBlock w64s) (Count r) = (Position i, Count r')
+    partialSelect (IntermediateBlock w64s) (Count r) = (Position i, Count r')
       where
         basicBlockIndex
             =   fromIntegral
@@ -300,14 +301,14 @@ instance SuccinctBitVector IntermediateBlock where
         w64 = Unboxed.unsafeIndex w64s vectorIndex
 
         r' = r - ((w64 >> (w16Index << 4)) .&. 0xFFFF)
-    {-# INLINE select #-}
+    {-# INLINE partialSelect #-}
 
 newtype SuperBlock = SuperBlock
     { getSuperBlock :: Unboxed.Vector Word64
     } deriving (Show)
 
 instance SuccinctBitVector SuperBlock where
-    rank (SuperBlock w64s) (Position i) = (Count r, Position i')
+    partialRank (SuperBlock w64s) (Position i) = (Count r, Position i')
       where
         (intermediateBlockIndex, i') = i `quotRem` 4096
 
@@ -316,9 +317,9 @@ instance SuccinctBitVector SuperBlock where
         w64 = Unboxed.unsafeIndex w64s vectorIndex
 
         r = (w64 >> (w16Index << 4)) .&. 0xFFFF
-    {-# INLINE rank #-}
+    {-# INLINE partialRank #-}
 
-    select (SuperBlock w64s) (Count r) = (Position i, Count r')
+    partialSelect (SuperBlock w64s) (Count r) = (Position i, Count r')
       where
         intermediateBlockIndex
             =   fromIntegral
@@ -339,7 +340,7 @@ instance SuccinctBitVector SuperBlock where
         w64 = Unboxed.unsafeIndex w64s vectorIndex
 
         r' = r - ((w64 >> (w16Index << 4)) .&. 0xFFFF)
-    {-# INLINE select #-}
+    {-# INLINE partialSelect #-}
 
 {-| Create an `BitVector` from a `Unboxed.Vector` of bits packed as `Word64`s
 
@@ -497,15 +498,15 @@ prepare v = BitVector
         ) (Unboxed.zip v1 (Unboxed.drop 1 v1))
 
 instance SuccinctBitVector BitVector where
-    rank (BitVector _ rank9_ _ bits_) p0 = (c1 + c2 + c3, p3)
+    partialRank (BitVector _ rank9_ _ bits_) p0 = (c1 + c2 + c3, p3)
       where
-        (c1, p1) = unsafeRankLevel0 rank9_     p0
-        (c2, p2) = rank             basicBlock p1
-        (c3, p3) = rank             w64        p2
+        (c1, p1) = partialRankLevel0 rank9_     p0
+        (c2, p2) = partialRank       basicBlock p1
+        (c3, p3) = partialRank       w64        p2
         basicBlock = BasicBlock (Unboxed.unsafeIndex rank9_ (2 * (getPosition p0 `quot` 512) + 1))
         w64        = Unboxed.unsafeIndex bits_ (getPosition p0 `quot` 64)
 
-    select (BitVector _ rank9_ (Select9 primary_ secondary_) bits_) r =
+    partialSelect (BitVector _ rank9_ (Select9 primary_ secondary_) bits_) r =
         let i               = getCount r `quot` 512
             p               = Unboxed.unsafeIndex primary_ (fromIntegral i)
             q               = Unboxed.unsafeIndex primary_ (fromIntegral i + 1)
@@ -521,8 +522,8 @@ instance SuccinctBitVector BitVector where
                     let basicBlockIndex = getPosition p1 `quot` 512
                         basicBlock      = BasicBlock (Unboxed.unsafeIndex rank9_ (basicBlockIndex * 2 + 1))
                         w64             = Unboxed.unsafeIndex bits_ (getPosition (p1 + p2) `quot` 64)
-                        (p2, c2) = select basicBlock c1
-                        (p3, c3) = select w64        c2
+                        (p2, c2) = partialSelect basicBlock c1
+                        (p3, c3) = partialSelect w64        c2
                     in  (p1 + p2 + p3, c3)
                 | numBasicBlocks < 8 ->
                     let intermediateBlock = IntermediateBlock (Unboxed.unsafeSlice secondaryBegin 2 secondary_)
@@ -530,9 +531,9 @@ instance SuccinctBitVector BitVector where
                         w64Index          = getPosition (p1 + p2 + p3) `quot`  64
                         basicBlock        = BasicBlock (Unboxed.unsafeIndex rank9_ (basicBlockIndex * 2 + 1))
                         w64               = Unboxed.unsafeIndex bits_ w64Index
-                        (p2, c2) = select intermediateBlock c1
-                        (p3, c3) = select basicBlock        c2
-                        (p4, c4) = select w64               c3
+                        (p2, c2) = partialSelect intermediateBlock c1
+                        (p3, c3) = partialSelect basicBlock        c2
+                        (p4, c4) = partialSelect w64               c3
                     in  (p1 + p2 + p3 + p4, c4)
                 | numBasicBlocks < 64 ->
                     let superBlock        = SuperBlock (Unboxed.unsafeSlice secondaryBegin 2 secondary_)
@@ -541,10 +542,10 @@ instance SuccinctBitVector BitVector where
                         w64Index          = getPosition (p1 + p2 + p3 + p4) `quot` 64
                         basicBlock        = BasicBlock (Unboxed.unsafeIndex rank9_ (basicBlockIndex * 2 + 1))
                         w64               = Unboxed.unsafeIndex bits_ w64Index
-                        (p2, c2) = select superBlock        c1
-                        (p3, c3) = select intermediateBlock c2
-                        (p4, c4) = select basicBlock        c3
-                        (p5, c5) = select w64               c4
+                        (p2, c2) = partialSelect superBlock        c1
+                        (p3, c3) = partialSelect intermediateBlock c2
+                        (p4, c4) = partialSelect basicBlock        c3
+                        (p5, c5) = partialSelect w64               c4
                     in  (p1 + p2 + p3 + p4 + p5, c5)
                 | numBasicBlocks < 128 ->
                     let (vectorIndex, w16Index) = getPosition p1 `quotRem` 4
@@ -580,8 +581,14 @@ prop> let sv = prepare v in fmap getCount (safeRank sv (size sv)) == Just (Unbox
 
 prop> let sv = prepare v in (0 <= n && n <= size sv) || (safeRank sv n == Nothing)
 -}
-safeRank :: BitVector -> Position -> Maybe (Count, Position)
-safeRank i p =
-    if 0 <= p && p <= size i
-    then Just (rank i p)
+rank :: BitVector -> Position -> Maybe Count
+rank sbv p =
+    if 0 <= p && p <= size sbv
+    then Just (fst (partialRank sbv p))
+    else Nothing
+
+select :: BitVector -> Count -> Maybe Position
+select sbv n =
+    if 0 <= n && and (toList (fmap (n <=) (rank sbv (size sbv))))
+    then Just (fst (partialSelect sbv n))
     else Nothing
