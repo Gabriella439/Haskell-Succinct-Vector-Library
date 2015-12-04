@@ -199,7 +199,7 @@ instance SuccinctBitVector Word64 where
     {-# INLINE rank #-}
 
     select x (Count r) =
-        (Position (fromIntegral (b + ((((s3 `le8` (l * l8)) >> 7) * l8) >> 56))), 1)
+        (Position (fromIntegral (b + ((((s3 `le8` (l * l8)) >> 7) * l8) >> 56))), 0)
       where
         s0 = x - ((x .&. 0xAAAAAAAAAAAAAAAA) >> 1)
         s1 = (s0 .&. 0x3333333333333333) + ((s0 >> 2) .&. 0x3333333333333333)
@@ -239,10 +239,7 @@ instance SuccinctBitVector Word64 where
     Bits #54-62: Word #6
     Bit  #64   : 0
 -}
-newtype BasicBlock = BasicBlock Word64 deriving (Num)
-
-instance Show BasicBlock where
-    show (BasicBlock w64) = "0x" ++ Numeric.showHex w64 ""
+newtype BasicBlock = BasicBlock Word64 deriving (Num, Show)
 
 instance SuccinctBitVector BasicBlock where
     rank (BasicBlock s) (Position i) =
@@ -267,7 +264,9 @@ unsafeRankLevel0 v (Position i) = (Count n, Position q)
     (p, q) = i `quotRem` 512
 {-# INLINE unsafeRankLevel0 #-}
 
-newtype IntermediateBlock = IntermediateBlock (Unboxed.Vector Word64)
+newtype IntermediateBlock = IntermediateBlock
+    { getIntermediateBlock :: Unboxed.Vector Word64
+    } deriving (Show)
 
 instance SuccinctBitVector IntermediateBlock where
     rank (IntermediateBlock w64s) (Position i) = (Count r, Position i')
@@ -287,13 +286,13 @@ instance SuccinctBitVector IntermediateBlock where
             =   fromIntegral
             (   ( Unboxed.sum
                     ( Unboxed.map
-                        (\w64 -> (w64 `leu16` (r * l16)) >> 15)
+                        (\w64 -> (((w64 `leu16` (r * l16)) >> 15) * l16) >> 48)
                         w64s
                     )
                 *   l16
                 )
             >>  48
-            )
+            ) - 1
 
         i = basicBlockIndex << 9
 
@@ -304,7 +303,9 @@ instance SuccinctBitVector IntermediateBlock where
         r' = r - ((w64 >> (w16Index << 4)) .&. 0xFFFF)
     {-# INLINE select #-}
 
-newtype SuperBlock = SuperBlock (Unboxed.Vector Word64)
+newtype SuperBlock = SuperBlock
+    { getSuperBlock :: Unboxed.Vector Word64
+    } deriving (Show)
 
 instance SuccinctBitVector SuperBlock where
     rank (SuperBlock w64s) (Position i) = (Count r, Position i')
@@ -324,13 +325,13 @@ instance SuccinctBitVector SuperBlock where
             =   fromIntegral
             (   ( Unboxed.sum
                     ( Unboxed.map
-                        (\w64 -> (w64 `leu16` (r * l16)) >> 15)
+                        (\w64 -> (((w64 `leu16` (r * l16)) >> 15) * l16) >> 48)
                         w64s
                     )
                 *   l16
                 )
             >>  48
-            )
+            ) - 1
 
         i = intermediateBlockIndex << 9
 
@@ -507,29 +508,29 @@ instance SuccinctBitVector BitVector where
         basicBlock = BasicBlock (Unboxed.unsafeIndex rank9_ (2 * (getPosition p0 `quot` 512) + 1))
         w64        = Unboxed.unsafeIndex bits_ (getPosition p0 `quot` 64)
 
-    select (BitVector _ rank9_ (Select9 primary_ secondary_) _) (Count r) =
+    select (BitVector _ rank9_ (Select9 primary_ secondary_) bits_) (Count r) =
         let i               = r `quot` 512
-            c1              = Count (r - i * 512)
-            p1              = Position p
             p               = Unboxed.unsafeIndex primary_ (fromIntegral i)
             q               = Unboxed.unsafeIndex primary_ (fromIntegral i + 1)
             basicBlockBegin = p `quot` 512
             basicBlockEnd   = q `quot` 512
+            p1              = Position (basicBlockBegin * 512)
+            c1              = Count (Unboxed.unsafeIndex rank9_ (basicBlockBegin * 2))
             span            = 2 * numBasicBlocks
             numBasicBlocks  = basicBlockEnd - basicBlockBegin
             secondaryBegin  = basicBlockBegin * 2
         in  case () of
               _ | numBasicBlocks < 2 ->
-                    let basicBlock = BasicBlock (Unboxed.unsafeIndex rank9_ (numBasicBlocks * 2))
-                        w64        = Unboxed.unsafeIndex rank9_ (basicBlockBegin * 2 + 1)
+                    let basicBlock = BasicBlock (Unboxed.unsafeIndex rank9_ (basicBlockBegin * 2 + 1))
+                        w64        = Unboxed.unsafeIndex bits_ (getPosition (p1 + p2) `quot` 64)
                         (p2, c2) = select basicBlock c1
                         (p3, c3) = select w64        c2
                     in  (p1 + p2 + p3, c3)
                 | numBasicBlocks < 8 ->
                     let intermediateBlock = IntermediateBlock (Unboxed.unsafeSlice secondaryBegin 2 secondary_)
                         basicBlockIndex   = basicBlockBegin + (getPosition p2 `quot` 512)
-                        basicBlock        = BasicBlock (Unboxed.unsafeIndex rank9_ (basicBlockIndex * 2))
-                        w64               = Unboxed.unsafeIndex rank9_ (basicBlockIndex * 2 + 1)
+                        basicBlock        = BasicBlock (Unboxed.unsafeIndex rank9_ (basicBlockIndex * 2 + 1))
+                        w64               = Unboxed.unsafeIndex bits_ (getPosition (p1 + p2 + p3) `quot` 64)
                         (p2, c2) = select intermediateBlock c1
                         (p3, c3) = select basicBlock        c2
                         (p4, c4) = select w64               c3
@@ -540,8 +541,8 @@ instance SuccinctBitVector BitVector where
                     let superBlock        = SuperBlock (Unboxed.unsafeSlice secondaryBegin 2 secondary_)
                         intermediateBlock = IntermediateBlock (Unboxed.unsafeSlice (secondaryBegin + 2) (min span 18 - 2) secondary_)
                         basicBlockIndex   = basicBlockBegin + (getPosition p3 `quot` 512)
-                        basicBlock        = BasicBlock (Unboxed.unsafeIndex rank9_ (basicBlockIndex * 2))
-                        w64               = Unboxed.unsafeIndex rank9_ (basicBlockIndex * 2 + 1)
+                        basicBlock        = BasicBlock (Unboxed.unsafeIndex rank9_ (basicBlockIndex * 2 + 1))
+                        w64               = Unboxed.unsafeIndex bits_ (getPosition (p1 + p2 + p3 + p4) `quot` 64)
                         (p2, c2) = select superBlock        c1
                         (p3, c3) = select intermediateBlock c2
                         (p4, c4) = select basicBlock        c3
