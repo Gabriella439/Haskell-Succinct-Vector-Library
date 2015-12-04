@@ -508,29 +508,31 @@ instance SuccinctBitVector BitVector where
         basicBlock = BasicBlock (Unboxed.unsafeIndex rank9_ (2 * (getPosition p0 `quot` 512) + 1))
         w64        = Unboxed.unsafeIndex bits_ (getPosition p0 `quot` 64)
 
-    select (BitVector _ rank9_ (Select9 primary_ secondary_) bits_) (Count r) =
-        let i               = r `quot` 512
+    select (BitVector _ rank9_ (Select9 primary_ secondary_) bits_) r =
+        let i               = getCount r `quot` 512
             p               = Unboxed.unsafeIndex primary_ (fromIntegral i)
             q               = Unboxed.unsafeIndex primary_ (fromIntegral i + 1)
             basicBlockBegin = p `quot` 512
             basicBlockEnd   = q `quot` 512
             p1              = Position (basicBlockBegin * 512)
-            c1              = Count (Unboxed.unsafeIndex rank9_ (basicBlockBegin * 2))
-            span            = 2 * numBasicBlocks
+            c1              = r - Count (Unboxed.unsafeIndex rank9_ (basicBlockBegin * 2))
             numBasicBlocks  = basicBlockEnd - basicBlockBegin
+            span            = 2 * numBasicBlocks
             secondaryBegin  = basicBlockBegin * 2
         in  case () of
               _ | numBasicBlocks < 2 ->
-                    let basicBlock = BasicBlock (Unboxed.unsafeIndex rank9_ (basicBlockBegin * 2 + 1))
-                        w64        = Unboxed.unsafeIndex bits_ (getPosition (p1 + p2) `quot` 64)
+                    let basicBlockIndex = getPosition p1 `quot` 512
+                        basicBlock      = BasicBlock (Unboxed.unsafeIndex rank9_ (basicBlockIndex * 2 + 1))
+                        w64             = Unboxed.unsafeIndex bits_ (getPosition (p1 + p2) `quot` 64)
                         (p2, c2) = select basicBlock c1
                         (p3, c3) = select w64        c2
                     in  (p1 + p2 + p3, c3)
                 | numBasicBlocks < 8 ->
                     let intermediateBlock = IntermediateBlock (Unboxed.unsafeSlice secondaryBegin 2 secondary_)
-                        basicBlockIndex   = basicBlockBegin + (getPosition p2 `quot` 512)
+                        basicBlockIndex   = getPosition (p1 + p2     ) `quot` 512
+                        w64Index          = getPosition (p1 + p2 + p3) `quot`  64
                         basicBlock        = BasicBlock (Unboxed.unsafeIndex rank9_ (basicBlockIndex * 2 + 1))
-                        w64               = Unboxed.unsafeIndex bits_ (getPosition (p1 + p2 + p3) `quot` 64)
+                        w64               = Unboxed.unsafeIndex bits_ w64Index
                         (p2, c2) = select intermediateBlock c1
                         (p3, c3) = select basicBlock        c2
                         (p4, c4) = select w64               c3
@@ -540,9 +542,10 @@ instance SuccinctBitVector BitVector where
                     -- the secondary inventory
                     let superBlock        = SuperBlock (Unboxed.unsafeSlice secondaryBegin 2 secondary_)
                         intermediateBlock = IntermediateBlock (Unboxed.unsafeSlice (secondaryBegin + 2) (min span 18 - 2) secondary_)
-                        basicBlockIndex   = basicBlockBegin + (getPosition p3 `quot` 512)
+                        basicBlockIndex   = getPosition (p1 + p2 + p3     ) `quot` 512
+                        w64Index          = getPosition (p1 + p2 + p3 + p4) `quot` 64
                         basicBlock        = BasicBlock (Unboxed.unsafeIndex rank9_ (basicBlockIndex * 2 + 1))
-                        w64               = Unboxed.unsafeIndex bits_ (getPosition (p1 + p2 + p3 + p4) `quot` 64)
+                        w64               = Unboxed.unsafeIndex bits_ w64Index
                         (p2, c2) = select superBlock        c1
                         (p3, c3) = select intermediateBlock c2
                         (p4, c4) = select basicBlock        c3
