@@ -274,11 +274,11 @@ instance SuccinctBitVector IntermediateBlock where
       where
         (basicBlockIndex, i') = i `quotRem` 512
 
-        (vectorIndex, word16Index) = basicBlockIndex `quotRem` 4
+        (vectorIndex, w16Index) = basicBlockIndex `quotRem` 4
         
         w64 = Unboxed.unsafeIndex w64s vectorIndex
 
-        r = (w64 >> (word16Index << 4)) .&. 0xFFFF
+        r = (w64 >> (w16Index << 4)) .&. 0xFFFF
     {-# INLINE rank #-}
 
     select (IntermediateBlock w64s) (Count r) = (Position i, Count r')
@@ -297,11 +297,11 @@ instance SuccinctBitVector IntermediateBlock where
 
         i = basicBlockIndex << 9
 
-        (vectorIndex, word16Index) = basicBlockIndex `quotRem` 4
+        (vectorIndex, w16Index) = basicBlockIndex `quotRem` 4
         
         w64 = Unboxed.unsafeIndex w64s vectorIndex
 
-        r' = r - ((w64 >> (word16Index << 4)) .&. 0xFFFF)
+        r' = r - ((w64 >> (w16Index << 4)) .&. 0xFFFF)
     {-# INLINE select #-}
 
 newtype SuperBlock = SuperBlock (Unboxed.Vector Word64)
@@ -311,11 +311,11 @@ instance SuccinctBitVector SuperBlock where
       where
         (intermediateBlockIndex, i') = i `quotRem` 4096
 
-        (vectorIndex, word16Index) = intermediateBlockIndex `quotRem` 4
+        (vectorIndex, w16Index) = intermediateBlockIndex `quotRem` 4
         
         w64 = Unboxed.unsafeIndex w64s vectorIndex
 
-        r = (w64 >> (word16Index << 4)) .&. 0xFFFF
+        r = (w64 >> (w16Index << 4)) .&. 0xFFFF
     {-# INLINE rank #-}
 
     select (SuperBlock w64s) (Count r) = (Position i, Count r')
@@ -334,11 +334,11 @@ instance SuccinctBitVector SuperBlock where
 
         i = intermediateBlockIndex << 9
 
-        (vectorIndex, word16Index) = intermediateBlockIndex `quotRem` 4
+        (vectorIndex, w16Index) = intermediateBlockIndex `quotRem` 4
         
         w64 = Unboxed.unsafeIndex w64s vectorIndex
 
-        r' = r - ((w64 >> (word16Index << 4)) .&. 0xFFFF)
+        r' = r - ((w64 >> (w16Index << 4)) .&. 0xFFFF)
     {-# INLINE select #-}
 
 {-| Create an `BitVector` from a `Unboxed.Vector` of bits packed as `Word64`s
@@ -542,13 +542,24 @@ instance SuccinctBitVector BitVector where
                         basicBlockIndex   = basicBlockBegin + (getPosition p3 `quot` 512)
                         basicBlock        = BasicBlock (Unboxed.unsafeIndex rank9_ (basicBlockIndex * 2))
                         w64               = Unboxed.unsafeIndex rank9_ (basicBlockIndex * 2 + 1)
-                       
                         (p2, c2) = select superBlock        c1
                         (p3, c3) = select intermediateBlock c2
                         (p4, c4) = select basicBlock        c3
                         (p5, c5) = select w64               c4
-                        in (p1 + p2 + p3 + p4 + p5, c5)
-                | otherwise -> undefined
+                    in  (p1 + p2 + p3 + p4 + p5, c5)
+                | numBasicBlocks < 128 ->
+                    let (vectorIndex, w16Index) = getPosition p1 `quotRem` 4
+                        w64 = Unboxed.unsafeIndex secondary_ (secondaryBegin + vectorIndex)
+                        p2  = Position (fromIntegral ((w64 >> (w16Index << 4)) .&. 0xFFFF))
+                    in  (p1 + p2, 1)
+                | numBasicBlocks < 256 ->
+                    let (vectorIndex, w32Index) = getPosition p1 `quotRem` 2
+                        w64 = Unboxed.unsafeIndex secondary_ (secondaryBegin + vectorIndex)
+                        p2  = Position (fromIntegral ((w64 >> (w32Index << 5)) .&. 0xFFFFFFFF))
+                    in  (p1 + p2, 1)
+                | otherwise ->
+                    let p2 = Position (fromIntegral (Unboxed.unsafeIndex secondary_ (getPosition p1)))
+                    in  (p2, 1)
 
 {-| @(rank i n)@ computes the number of ones up to, but not including the bit at
     index @n@
