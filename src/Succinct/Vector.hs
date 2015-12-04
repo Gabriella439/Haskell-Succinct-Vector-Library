@@ -34,7 +34,6 @@ module Succinct.Vector (
     ) where
 
 -- TODO: Compress original bit vector
--- TODO: Change `select` to return index after the given bit
 -- TODO: Carefully examine all `fromIntegral` uses
 
 import Control.DeepSeq (NFData(..))
@@ -401,7 +400,6 @@ prepare v = BitVector
 
         iBegin = Status First 0 0
 
-    -- TODO: Check to see if point-free style interferes with fusion
     v1 :: Unboxed.Vector Int
     v1 =
           flip Unboxed.snoc lengthInBits
@@ -429,7 +427,6 @@ prepare v = BitVector
             then Unboxed.unsafeIndex vRank i
             else fromIntegral (maxBound :: Word16)
 
-    -- TODO: What if the vector is empty?
     locate :: Unboxed.Vector Int -> Int -> Int
     locate vector i =
         if i < Unboxed.length vector
@@ -538,8 +535,6 @@ instance SuccinctBitVector BitVector where
                         (p4, c4) = select w64               c3
                     in  (p1 + p2 + p3 + p4, c4)
                 | numBasicBlocks < 64 ->
-                    -- TODO: Not correct; there might not be 18 `Word64s` in
-                    -- the secondary inventory
                     let superBlock        = SuperBlock (Unboxed.unsafeSlice secondaryBegin 2 secondary_)
                         intermediateBlock = IntermediateBlock (Unboxed.unsafeSlice (secondaryBegin + 2) (min span 18 - 2) secondary_)
                         basicBlockIndex   = getPosition (p1 + p2 + p3     ) `quot` 512
