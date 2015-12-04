@@ -9,9 +9,9 @@
 Just True
 >>> index sbv 64
 Just False
->>> rank sbv 27
+>>> safeRank sbv 27
 Just 27
->>> rank sbv 128
+>>> safeRank sbv 128
 Just 64
 
     This module is based on the paper "Broadword Implementation of Rank/Select
@@ -22,19 +22,20 @@ Just 64
 
 module Succinct.Vector (
     -- * Construction
-      SuccinctBitVector
+      BitVector
     , prepare
 
     -- * Queries
-    , Position
-    , Count
+    , Position(..)
+    , Count(..)
+    , SuccinctBitVector(..)
     , index
-    , unsafeIndex
-    , rank
-    , unsafeRank
+    , safeRank
     ) where
 
 -- TODO: Compress original bit vector
+-- TODO: Change `select` to return index after the given bit
+-- TODO: Carefully examine all `fromIntegral` uses
 
 import Control.DeepSeq (NFData(..))
 import Data.Bits (Bits, (.|.), (.&.), xor, complement)
@@ -42,8 +43,8 @@ import Data.Word (Word16, Word64)
 import Prelude hiding ((>>))  -- Use `(>>)` for right bit shift in this module
 
 import qualified Data.Bits           as Bits
-import qualified Data.Vector.Generic as Generic
 import qualified Data.Vector.Unboxed as Unboxed
+import qualified Numeric
 
 -- $setup
 -- >>> :set -XScopedTypeVariables
@@ -57,7 +58,7 @@ import qualified Data.Vector.Unboxed as Unboxed
 
     This will silently fail and return garbage if you supply an invalid index
 -}
-unsafeIndex :: SuccinctBitVector -> Position -> Bool
+unsafeIndex :: BitVector -> Position -> Bool
 unsafeIndex i n = Bits.testBit w8 r
   where
     (q, r) = quotRem (getPosition n) 64
@@ -65,7 +66,7 @@ unsafeIndex i n = Bits.testBit w8 r
 
 
 -- | @(index i n)@ retrieves the bit at the index @n@
-index :: SuccinctBitVector -> Position -> Maybe Bool
+index :: BitVector -> Position -> Maybe Bool
 index i n =
     if 0 <= n && n < size i
     then Just (unsafeIndex i n)
@@ -74,9 +75,9 @@ index i n =
 {-| A bit vector enriched with an index that adds O(1) `rank` and `select`
     queries
 
-    The `SuccinctBitVector` increases the original bit vector's size by 25%
+    The `BitVector` increases the original bit vector's size by 25%
 -}
-data SuccinctBitVector = SuccinctBitVector
+data BitVector = BitVector
     { size    :: !Position
     -- ^ Size of original bit vector, in bits
     , rank9   :: !(Unboxed.Vector Word64)
@@ -87,7 +88,7 @@ data SuccinctBitVector = SuccinctBitVector
     -- ^ Original bit vector
     } deriving (Show)
 
-instance NFData SuccinctBitVector where
+instance NFData BitVector where
     rnf i = i `seq` ()
 
 data Select9 = Select9
@@ -126,6 +127,14 @@ h9 :: Word64
 h9 = 0x4020100804020100
 {-# INLINE h9 #-}
 
+l16 :: Word64
+l16 = 0x0001000100010001
+{-# INLINE l16 #-}
+
+h16 :: Word64
+h16 = 0x8000800080008000
+{-# INLINE h16 #-}
+
 le8 :: Word64 -> Word64 -> Word64
 x `le8` y
     = (((y .|. h8) - (x .&. complement h8)) `xor` x `xor` y) .&. h8
@@ -143,6 +152,14 @@ x `leu9` y
         )
     .&. h9
 {-# INLINE leu9 #-}
+
+leu16 :: Word64 -> Word64 -> Word64
+x `leu16` y
+    =   (     (((y .|. h16) - (x .&. complement h16)) .|. (x `xor` y))
+        `xor` (x .&. complement y)
+        )
+    .&. h16
+{-# INLINE leu16 #-}
 
 newtype Position = Position { getPosition :: Int } deriving (Eq, Num, Ord)
 
@@ -172,58 +189,46 @@ popCount x0 = Count ((x3 * 0x0101010101010101) >> 56)
 -}
 {-# INLINE popCount #-}
 
-unsafeRank64 :: Word64 -> Position -> Count
-unsafeRank64 w64 (Position n) =
-    popCount (w64 .&. negate (Bits.shiftL 0x1 (64 - n)))
-{-  IMPLEMENTATION NOTES:
+class SuccinctBitVector v where
+    rank   :: v -> Position -> (Count   , Position)
+    select :: v -> Count    -> (Position, Count   )
 
-    Do not use `(<<)`/`Bits.unsafeShiftL` because they do not properly handle
-    shifting by 64 bits when `n = 0`
--}
-{-# INLINE unsafeRank64 #-}
+instance SuccinctBitVector Word64 where
+    rank w64 (Position n) =
+        (popCount (w64 .&. negate (Bits.shiftL 0x1 (64 - n))), 0)
+    {-# INLINE rank #-}
+    {-  IMPLEMENTATION NOTES:
 
-{-| @(unsafeSelectWord64 w64 n)@ computes the index of the `n`-th one in `w64`
-    or return 72s if there is no such one present
+        Do not use `(<<)`/`Bits.unsafeShiftL` because they do not properly
+        handle shifting by 64 bits when `n = 0`
+    -}
 
-    `n` is 0-indexed, meaning that `n = 0` searches for the first one in `w64`
+    select x (Count r) =
+        (Position (fromIntegral (b + ((((s3 `le8` (l * l8)) >> 7) * l8) >> 56))), 1)
+      where
+        s0 = x - ((x .&. 0xAAAAAAAAAAAAAAAA) >> 1)
+        s1 = (s0 .&. 0x3333333333333333) + ((s0 >> 2) .&. 0x3333333333333333)
+        s2 = ((s1 + (s1 >> 4)) .&. 0x0F0F0F0F0F0F0F0F) * l8
+        b  = ((((s2 `le8` (r * l8)) >> 7) * l8) >> 53) .&. 0xFFFFFFFFFFFFFFF8
+        b' = fromIntegral b
+        l  = r - (((s2 << 8) >> b') .&. 0xFF)
+        s3 = ((0x0 `lt8` (((x >> b' .&. 0xFF) * l8) .&. 0x8040201008040201)) >> 0x7) * l8
+    {-# INLINE select #-}
+    {-  IMPLEMENTATION NOTES:
 
-    Similarly, the result is 0-indexed, meaning that a result of 0 points to the
-    first bit of `w64`
+        This is "Algorithm 2" from this paper:
 
-    Precondition:
+    > Vigna, Sebastiano. "Broadword implementation of rank/select queries." Experimental Algorithms. Springer Berlin Heidelberg, 2008. 154-168.
 
-> n < 64
+        There was a typo in the original paper.  Line 1 of the original
+        "Algorithm 2" has:
 
-    If you violate the precondition this function may silently fail and return
-    garbage
--}
-unsafeSelect64 :: Word64 -> Count -> (Position, Count)
-unsafeSelect64 x (Count r) =
-    (Position (fromIntegral (b + ((((s3 `le8` (l * l8)) >> 7) * l8) >> 56))), 1)
-  where
-    s0 = x - ((x .&. 0xAAAAAAAAAAAAAAAA) >> 1)
-    s1 = (s0 .&. 0x3333333333333333) + ((s0 >> 2) .&. 0x3333333333333333)
-    s2 = ((s1 + (s1 >> 4)) .&. 0x0F0F0F0F0F0F0F0F) * l8
-    b  = ((((s2 `le8` (r * l8)) >> 7) * l8) >> 53) .&. 0xFFFFFFFFFFFFFFF8
-    b' = fromIntegral b
-    l  = r - (((s2 << 8) >> b') .&. 0xFF)
-    s3 = ((0x0 `lt8` (((x >> b' .&. 0xFF) * l8) .&. 0x8040201008040201)) >> 0x7) * l8
-{-  IMPLEMENTATION NOTES:
+    > 1  s = (s & 0x3333333333333333) + ((x >> 2) & 0x3333333333333333)
 
-    This is "Algorithm 2" from this paper:
+        ... but should have instead been:
 
-> Vigna, Sebastiano. "Broadword implementation of rank/select queries." Experimental Algorithms. Springer Berlin Heidelberg, 2008. 154-168.
-
-    There was a typo in the original paper.  Line 1 of the original
-    "Algorithm 2" has:
-
-> 1  s = (s & 0x3333333333333333) + ((x >> 2) & 0x3333333333333333)
-
-    ... but should have instead been:
-
-> 1  s = (s & 0x3333333333333333) + ((s >> 2) & 0x3333333333333333)
--}
-{-# INLINE unsafeSelect64 #-}
+    > 1  s = (s & 0x3333333333333333) + ((s >> 2) & 0x3333333333333333)
+    -}
 
 {-| A non-decreasing list of 7 9-bit counts, packed into one `Word64`
 
@@ -239,36 +244,71 @@ unsafeSelect64 x (Count r) =
     Bits #54-62: Word #6
     Bit  #64   : 0
 -}
-newtype Word9x7 = Word9x7 Word64 deriving (Num)
+newtype BasicBlock = BasicBlock Word64 deriving (Num)
 
-instance Show Word9x7 where
-    show (Word9x7 w64) = show w64
+instance Show BasicBlock where
+    show (BasicBlock w64) = "0x" ++ Numeric.showHex w64 ""
 
-{-| @(unsafeRank9x7 w9x7 i)@ gets the @i@-th 9-bit number stored in @w@ where
-    the 1st 9-bit (@i = 1@) is stored in the least significant 9 bits
+instance SuccinctBitVector BasicBlock where
+    rank (BasicBlock s) (Position i) =
+        (Count ((s >> (fromIntegral (t + ((t >> 60) .&. 8)) * 9)) .&. 0x1FF), Position q)
+      where
+        (p, q) = i `quotRem` 64
 
-    Assumptions:
+        t = p - 1
+    {-# INLINE rank #-}
 
-    * @i < 8@
+    select (BasicBlock s) (Count r) = (Position (64 * o), Count r')
+      where
+        o  = fromIntegral (((((s `leu9` (r * l9)) >> 8) * l9) >> 54) .&. 7)
+        r' = r - ((s >> fromIntegral (((o - 1) .&. 7) * 9)) .&. 0x1FF)
+    {-# INLINE select #-}
 
-    This always returns `0` for the case where @i = 0@
-
-> unsafeRank9x7 w 0 = 0
--}
-unsafeRank9x7 :: Word9x7 -> Position -> Count
-unsafeRank9x7 (Word9x7 s) (Position i) =
-    Count ((s >> (fromIntegral (t + ((t >> 60) .&. 8)) * 9)) .&. 0x1FF)
+unsafeRankLevel0 :: Unboxed.Vector Word64 -> Position -> (Count, Position)
+unsafeRankLevel0 v (Position i) = (Count n, Position q)
   where
-    t = i - 1
-{-# INLINE unsafeRank9x7 #-}
+    n = Unboxed.unsafeIndex v (p * 2)
 
-{-| Create an `SuccinctBitVector` from a `Unboxed.Vector` of bits packed as
-    `Word64`s
+    (p, q) = i `quotRem` 512
+{-# INLINE unsafeRankLevel0 #-}
+
+data BasicBlockx8 = BasicBlockx8 Word64 Word64
+
+instance SuccinctBitVector BasicBlockx8 where
+    rank (BasicBlockx8 w64_0 w64_1) (Position i) = (Count r, Position i')
+      where
+        (basicBlockIndex, i') = i `quotRem` 512
+
+        r = if basicBlockIndex < 4
+            then (w64_0 >> ( basicBlockIndex      << 4)) .&. 0xFFFF
+            else (w64_1 >> ((basicBlockIndex - 4) << 4)) .&. 0xFFFF
+    {-# INLINE rank #-}
+
+    select (BasicBlockx8 w64_0 w64_1) (Count r) = (Position i, Count r')
+      where
+        r16 = r * l16
+
+        basicBlockIndex
+            =  fromIntegral
+            (  ((((w64_0 `leu16` r16) >> 15) + ((w64_1 `leu16` r16) >> 15)) * l16)
+            >> 48
+            )
+
+        i = basicBlockIndex << 9
+
+        n = if basicBlockIndex < 4
+            then (w64_0 >> ( basicBlockIndex      << 4)) .&. 0xFFFF
+            else (w64_1 >> ((basicBlockIndex - 4) << 4)) .&. 0xFFFF
+
+        r' = r - n
+    {-# INLINE select #-}
+
+{-| Create an `BitVector` from a `Unboxed.Vector` of bits packed as `Word64`s
 
     You are responsible for padding your data to the next `Word64` boundary
 -}
-prepare :: Unboxed.Vector Word64 -> SuccinctBitVector
-prepare v = SuccinctBitVector
+prepare :: Unboxed.Vector Word64 -> BitVector
+prepare v = BitVector
     { size    = Position lengthInBits
     , rank9   = vRank
     , select9 = Select9 v1 v2
@@ -333,14 +373,14 @@ prepare v = SuccinctBitVector
           v ))))
 
     oneIndices :: Int -> Int -> Unboxed.Vector Word64 -> Unboxed.Vector Int
-    oneIndices i1 i2 v =
+    oneIndices i1 i2 vector =
           Unboxed.map (\(i, _) -> i)
         ( Unboxed.filter (\(_, b) -> b)
         ( Unboxed.imap (,)
         ( Unboxed.unsafeSlice i1 (i2 - i1)
         ( Unboxed.concatMap (\w64 ->
             Unboxed.generate 64 (Bits.testBit w64) )
-          v ))))
+          vector ))))
     {-# INLINE oneIndices #-}
 
     count :: Int -> Word64
@@ -352,23 +392,23 @@ prepare v = SuccinctBitVector
 
     -- TODO: What if the vector is empty?
     locate :: Unboxed.Vector Int -> Int -> Int
-    locate v i =
-        if i < Unboxed.length v
-        then Unboxed.unsafeIndex v i
+    locate vector i =
+        if i < Unboxed.length vector
+        then Unboxed.unsafeIndex vector i
         else 0
 
     v2 =
         ( Unboxed.concatMap (\(p, q) ->
             -- TODO: Explain the deviation from the paper here
-            let basicBlockBegin = p `div` 512
-                basicBlockEnd   = q `div` 512
+            let basicBlockBegin = p `quot` 512
+                basicBlockEnd   = q `quot` 512
                 numBasicBlocks  = basicBlockEnd - basicBlockBegin
-                span            = numBasicBlocks * 2
+                s               = numBasicBlocks * 2
             in  case () of
                   _ | numBasicBlocks < 1 ->
                         Unboxed.empty
                     | numBasicBlocks < 8 ->
-                        Unboxed.generate span (\i ->
+                        Unboxed.generate s (\i ->
                                  if  i < 2
                             then let w16 j = count (basicBlockBegin + 4 * i + j)
                                            - count basicBlockBegin
@@ -379,7 +419,7 @@ prepare v = SuccinctBitVector
                                  in  w64
                             else 0 )
                     | numBasicBlocks < 64 ->
-                        Unboxed.generate span (\i ->
+                        Unboxed.generate s (\i ->
                                  if  i < 2
                             then let w16 j = count (basicBlockBegin + 8 * (4 * i + j))
                                            - count basicBlockBegin
@@ -399,7 +439,7 @@ prepare v = SuccinctBitVector
                             else 0 )
                     | numBasicBlocks < 128 ->
                         let ones = oneIndices p q v
-                        in  Unboxed.generate span (\i ->
+                        in  Unboxed.generate s (\i ->
                                 let w16 j = fromIntegral (locate ones (4 * i + j))
                                     w64 =    w16 0
                                         .|. (w16 1 << 16)
@@ -408,34 +448,56 @@ prepare v = SuccinctBitVector
                                 in  w64 )
                     | numBasicBlocks < 256 ->
                         let ones = oneIndices p q v
-                        in  Unboxed.generate span (\i ->
+                        in  Unboxed.generate s (\i ->
                                 let w32 j = fromIntegral (locate ones (2 * i + j))
                                     w64 =    w32 0
                                         .|. (w32 1 << 32)
                                 in  w64 )
                     | otherwise ->
                         let ones = oneIndices p q v
-                        in  Unboxed.generate span (\i ->
+                        in  Unboxed.generate s (\i ->
                                 let w64 = fromIntegral (p + locate ones i)
                                 in  w64 ) )
         ) (Unboxed.zip v1 (Unboxed.drop 1 v1))
 
-{-| Like `rank` except that the bit index is not checked
+instance SuccinctBitVector BitVector where
+    rank (BitVector _ rank9_ _ bits_) p0 = (c1 + c2 + c3, p3)
+      where
+        (c1, p1) = unsafeRankLevel0 rank9_     p0
+        (c2, p2) = rank             basicBlock p1
+        (c3, p3) = rank             w64        p2
+        basicBlock = BasicBlock (Unboxed.unsafeIndex rank9_ (2 * (getPosition p0 `quot` 512) + 1))
+        w64  = Unboxed.unsafeIndex bits_ (getPosition p0 `quot` 64)
 
-    This will silently fail and return garbage if you supply an invalid index
--}
-unsafeRank :: SuccinctBitVector -> Position -> Count
-unsafeRank (SuccinctBitVector _ rank9_ _ bits_) (Position p) =
-        Count f
-    +   unsafeRank9x7 (Word9x7 s) (Position r)
-    +   unsafeRank64 (Unboxed.unsafeIndex bits_ w) (Position b)
-  where
-    (w, b) = quotRem p 64
-    (q, r) = quotRem w 8
-    f      = Unboxed.unsafeIndex rank9_ (2 * q    )
-    s      = Unboxed.unsafeIndex rank9_ (2 * q + 1)
-    t      = fromIntegral (r - 1) :: Word64
-    mask   = negate (Bits.shiftL 0x1 (64 - b))
+    select (BitVector _ rank9_ (Select9 primary_ secondary_) _) (Count r) =
+        let i               = r `quot` 512
+            c1              = Count (r - i * 512)
+            p1              = Position p
+            p               = Unboxed.unsafeIndex primary_ (fromIntegral i)
+            q               = Unboxed.unsafeIndex primary_ (fromIntegral i + 1)
+            basicBlockBegin = p `quot` 512
+            basicBlockEnd   = q `quot` 512
+            numBasicBlocks  = basicBlockEnd - basicBlockBegin
+            secondaryBegin  = basicBlockBegin * 2
+        in  case () of
+              _ | numBasicBlocks < 2 ->
+                    let basicBlock = BasicBlock (Unboxed.unsafeIndex rank9_ (numBasicBlocks * 2))
+                        w64        = Unboxed.unsafeIndex rank9_ (basicBlockBegin * 2 + 1)
+                        (p2, c2) = select basicBlock c1
+                        (p3, c3) = select w64        c2
+                    in  (p1 + p2 + p3, c3)
+                | numBasicBlocks < 8 ->
+                    let w64_0 = Unboxed.unsafeIndex secondary_  secondaryBegin
+                        w64_1 = Unboxed.unsafeIndex secondary_ (secondaryBegin + 1)
+                        basicBlockx8 = BasicBlockx8 w64_0 w64_1
+                        basicBlockIndex = basicBlockBegin + (getPosition p2 `quot` 512)
+                        basicBlock = BasicBlock (Unboxed.unsafeIndex rank9_ (basicBlockIndex * 2    ))
+                        w64   =          Unboxed.unsafeIndex rank9_ (basicBlockIndex * 2 + 1)
+                        (p2, c2) = select basicBlockx8 c1
+                        (p3, c3) = select basicBlock   c2
+                        (p4, c4) = select w64          c3
+                    in  (p1 + p2 + p3 + p4, c4)
+                | otherwise -> undefined
 
 {-| @(rank i n)@ computes the number of ones up to, but not including the bit at
     index @n@
@@ -446,8 +508,8 @@ Just 2
     The bits are 0-indexed, so @rank i 0@ always returns 0 and @rank i (size i)@
     returns the total number of ones in the bit vector
 
-prop> rank (prepare v) 0 == Just 0
-prop> let sv = prepare v in fmap getCount (rank sv (size sv)) == Just (Unboxed.sum (Unboxed.map (getCount . popCount) v))
+prop> safeRank (prepare v) 0 == Just 0
+prop> let sv = prepare v in fmap getCount (safeRank sv (size sv)) == Just (Unboxed.sum (Unboxed.map (getCount . popCount) v))
 
     This returns a valid value wrapped in a `Just` when:
 
@@ -455,10 +517,10 @@ prop> let sv = prepare v in fmap getCount (rank sv (size sv)) == Just (Unboxed.s
 
     ... and returns `Nothing` otherwise
 
-prop> let sv = prepare v in (0 <= n && n <= size sv) || (rank sv n == Nothing)
+prop> let sv = prepare v in (0 <= n && n <= size sv) || (safeRank sv n == Nothing)
 -}
-rank :: SuccinctBitVector -> Position -> Maybe Count
-rank i p =
+safeRank :: BitVector -> Position -> Maybe (Count, Position)
+safeRank i p =
     if 0 <= p && p <= size i
-    then Just (unsafeRank i p)
+    then Just (rank i p)
     else Nothing
