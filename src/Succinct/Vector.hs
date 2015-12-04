@@ -9,9 +9,9 @@
 Just True
 >>> index bv 64
 Just False
->>> safeRank bv 27
+>>> rank bv 27
 Just 27
->>> safeRank bv 128
+>>> rank bv 128
 Just 64
 
     This module is based on the paper "Broadword Implementation of Rank/Select
@@ -570,8 +570,8 @@ Just 2
     The bits are 0-indexed, so @rank i 0@ always returns 0 and @rank i (size i)@
     returns the total number of ones in the bit vector
 
-prop> safeRank (prepare v) 0 == Just 0
-prop> let sv = prepare v in fmap getCount (safeRank sv (size sv)) == Just (Unboxed.sum (Unboxed.map (getCount . popCount) v))
+prop> rank (prepare v) 0 == Just 0
+prop> let sv = prepare v in fmap getCount (rank sv (size sv)) == Just (Unboxed.sum (Unboxed.map (getCount . popCount) v))
 
     This returns a valid value wrapped in a `Just` when:
 
@@ -579,7 +579,7 @@ prop> let sv = prepare v in fmap getCount (safeRank sv (size sv)) == Just (Unbox
 
     ... and returns `Nothing` otherwise
 
-prop> let sv = prepare v in (0 <= n && n <= size sv) || (safeRank sv n == Nothing)
+prop> let sv = prepare v in (0 <= n && n <= size sv) || (rank sv n == Nothing)
 -}
 rank :: BitVector -> Position -> Maybe Count
 rank sbv p =
