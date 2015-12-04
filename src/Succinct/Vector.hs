@@ -195,13 +195,8 @@ class SuccinctBitVector v where
 
 instance SuccinctBitVector Word64 where
     rank w64 (Position n) =
-        (popCount (w64 .&. negate (Bits.shiftL 0x1 (64 - n))), 0)
+        (popCount (w64 .&. ((0x1 << n) - 1)), 0)
     {-# INLINE rank #-}
-    {-  IMPLEMENTATION NOTES:
-
-        Do not use `(<<)`/`Bits.unsafeShiftL` because they do not properly
-        handle shifting by 64 bits when `n = 0`
-    -}
 
     select x (Count r) =
         (Position (fromIntegral (b + ((((s3 `le8` (l * l8)) >> 7) * l8) >> 56))), 1)
@@ -467,7 +462,7 @@ instance SuccinctBitVector BitVector where
         (c2, p2) = rank             basicBlock p1
         (c3, p3) = rank             w64        p2
         basicBlock = BasicBlock (Unboxed.unsafeIndex rank9_ (2 * (getPosition p0 `quot` 512) + 1))
-        w64  = Unboxed.unsafeIndex bits_ (getPosition p0 `quot` 64)
+        w64        = Unboxed.unsafeIndex bits_ (getPosition p0 `quot` 64)
 
     select (BitVector _ rank9_ (Select9 primary_ secondary_) _) (Count r) =
         let i               = r `quot` 512
