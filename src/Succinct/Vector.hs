@@ -267,35 +267,78 @@ unsafeRankLevel0 v (Position i) = (Count n, Position q)
     (p, q) = i `quotRem` 512
 {-# INLINE unsafeRankLevel0 #-}
 
-data BasicBlockx8 = BasicBlockx8 Word64 Word64
+newtype IntermediateBlock = IntermediateBlock (Unboxed.Vector Word64)
 
-instance SuccinctBitVector BasicBlockx8 where
-    rank (BasicBlockx8 w64_0 w64_1) (Position i) = (Count r, Position i')
+instance SuccinctBitVector IntermediateBlock where
+    rank (IntermediateBlock w64s) (Position i) = (Count r, Position i')
       where
         (basicBlockIndex, i') = i `quotRem` 512
 
-        r = if basicBlockIndex < 4
-            then (w64_0 >> ( basicBlockIndex      << 4)) .&. 0xFFFF
-            else (w64_1 >> ((basicBlockIndex - 4) << 4)) .&. 0xFFFF
+        (vectorIndex, word16Index) = basicBlockIndex `quotRem` 4
+        
+        w64 = Unboxed.unsafeIndex w64s vectorIndex
+
+        r = (w64 >> (word16Index << 4)) .&. 0xFFFF
     {-# INLINE rank #-}
 
-    select (BasicBlockx8 w64_0 w64_1) (Count r) = (Position i, Count r')
+    select (IntermediateBlock w64s) (Count r) = (Position i, Count r')
       where
-        r16 = r * l16
-
         basicBlockIndex
-            =  fromIntegral
-            (  ((((w64_0 `leu16` r16) >> 15) + ((w64_1 `leu16` r16) >> 15)) * l16)
-            >> 48
+            =   fromIntegral
+            (   ( Unboxed.sum
+                    ( Unboxed.map
+                        (\w64 -> (w64 `leu16` (r * l16)) >> 15)
+                        w64s
+                    )
+                *   l16
+                )
+            >>  48
             )
 
         i = basicBlockIndex << 9
 
-        n = if basicBlockIndex < 4
-            then (w64_0 >> ( basicBlockIndex      << 4)) .&. 0xFFFF
-            else (w64_1 >> ((basicBlockIndex - 4) << 4)) .&. 0xFFFF
+        (vectorIndex, word16Index) = basicBlockIndex `quotRem` 4
+        
+        w64 = Unboxed.unsafeIndex w64s vectorIndex
 
-        r' = r - n
+        r' = r - ((w64 >> (word16Index << 4)) .&. 0xFFFF)
+    {-# INLINE select #-}
+
+newtype SuperBlock = SuperBlock (Unboxed.Vector Word64)
+
+instance SuccinctBitVector SuperBlock where
+    rank (SuperBlock w64s) (Position i) = (Count r, Position i')
+      where
+        (intermediateBlockIndex, i') = i `quotRem` 4096
+
+        (vectorIndex, word16Index) = intermediateBlockIndex `quotRem` 4
+        
+        w64 = Unboxed.unsafeIndex w64s vectorIndex
+
+        r = (w64 >> (word16Index << 4)) .&. 0xFFFF
+    {-# INLINE rank #-}
+
+    select (SuperBlock w64s) (Count r) = (Position i, Count r')
+      where
+        intermediateBlockIndex
+            =   fromIntegral
+            (   ( Unboxed.sum
+                    ( Unboxed.map
+                        (\w64 -> (w64 `leu16` (r * l16)) >> 15)
+                        w64s
+                    )
+                *   l16
+                )
+            >>  48
+            )
+
+        i = intermediateBlockIndex << 9
+
+        (vectorIndex, word16Index) = intermediateBlockIndex `quotRem` 4
+        
+        w64 = Unboxed.unsafeIndex w64s vectorIndex
+
+        r' = r - ((w64 >> (word16Index << 4)) .&. 0xFFFF)
     {-# INLINE select #-}
 
 {-| Create an `BitVector` from a `Unboxed.Vector` of bits packed as `Word64`s
@@ -472,6 +515,7 @@ instance SuccinctBitVector BitVector where
             q               = Unboxed.unsafeIndex primary_ (fromIntegral i + 1)
             basicBlockBegin = p `quot` 512
             basicBlockEnd   = q `quot` 512
+            span            = 2 * numBasicBlocks
             numBasicBlocks  = basicBlockEnd - basicBlockBegin
             secondaryBegin  = basicBlockBegin * 2
         in  case () of
@@ -482,16 +526,28 @@ instance SuccinctBitVector BitVector where
                         (p3, c3) = select w64        c2
                     in  (p1 + p2 + p3, c3)
                 | numBasicBlocks < 8 ->
-                    let w64_0 = Unboxed.unsafeIndex secondary_  secondaryBegin
-                        w64_1 = Unboxed.unsafeIndex secondary_ (secondaryBegin + 1)
-                        basicBlockx8 = BasicBlockx8 w64_0 w64_1
-                        basicBlockIndex = basicBlockBegin + (getPosition p2 `quot` 512)
-                        basicBlock = BasicBlock (Unboxed.unsafeIndex rank9_ (basicBlockIndex * 2    ))
-                        w64   =          Unboxed.unsafeIndex rank9_ (basicBlockIndex * 2 + 1)
-                        (p2, c2) = select basicBlockx8 c1
-                        (p3, c3) = select basicBlock   c2
-                        (p4, c4) = select w64          c3
+                    let intermediateBlock = IntermediateBlock (Unboxed.unsafeSlice secondaryBegin 2 secondary_)
+                        basicBlockIndex   = basicBlockBegin + (getPosition p2 `quot` 512)
+                        basicBlock        = BasicBlock (Unboxed.unsafeIndex rank9_ (basicBlockIndex * 2))
+                        w64               = Unboxed.unsafeIndex rank9_ (basicBlockIndex * 2 + 1)
+                        (p2, c2) = select intermediateBlock c1
+                        (p3, c3) = select basicBlock        c2
+                        (p4, c4) = select w64               c3
                     in  (p1 + p2 + p3 + p4, c4)
+                | numBasicBlocks < 64 ->
+                    -- TODO: Not correct; there might not be 18 `Word64s` in
+                    -- the secondary inventory
+                    let superBlock        = SuperBlock (Unboxed.unsafeSlice secondaryBegin 2 secondary_)
+                        intermediateBlock = IntermediateBlock (Unboxed.unsafeSlice (secondaryBegin + 2) (min span 18 - 2) secondary_)
+                        basicBlockIndex   = basicBlockBegin + (getPosition p3 `quot` 512)
+                        basicBlock        = BasicBlock (Unboxed.unsafeIndex rank9_ (basicBlockIndex * 2))
+                        w64               = Unboxed.unsafeIndex rank9_ (basicBlockIndex * 2 + 1)
+                       
+                        (p2, c2) = select superBlock        c1
+                        (p3, c3) = select intermediateBlock c2
+                        (p4, c4) = select basicBlock        c3
+                        (p5, c5) = select w64               c4
+                        in (p1 + p2 + p3 + p4 + p5, c5)
                 | otherwise -> undefined
 
 {-| @(rank i n)@ computes the number of ones up to, but not including the bit at
