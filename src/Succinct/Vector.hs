@@ -66,7 +66,6 @@ unsafeIndex i n = Bits.testBit w8 r
     (q, r) = quotRem (getPosition n) 64
     w8 = Unboxed.unsafeIndex (bits i) q
 
-
 {-| @(index i n)@ retrieves the bit at the index @n@
 
 prop> let bv = prepare (Unboxed.fromList w64s) in index bv n == do r1 <- rank bv n; r2 <- rank bv (n + 1); return (r1 < r2)
@@ -80,7 +79,7 @@ index i n =
 {-| A bit vector enriched with an index that adds O(1) `rank` and `select`
     queries
 
-    The `BitVector` increases the original bit vector's size by 25%
+    The `BitVector` increases the original bit vector's size by 87.5%
 -}
 data BitVector = BitVector
     { rank9   :: !(Unboxed.Vector Word64)
@@ -164,11 +163,13 @@ x `leu16` y
     .&. h16
 {-# INLINE leu16 #-}
 
+-- | A 0-indexed bit position
 newtype Position = Position { getPosition :: Int } deriving (Eq, Num, Ord)
 
 instance Show Position where
     show (Position n) = show n
 
+-- | A count of bits
 newtype Count = Count { getCount :: Word64 } deriving (Eq, Num, Ord)
 
 instance Show Count where
@@ -580,8 +581,8 @@ instance SuccinctBitVector BitVector where
     size bv = Position (Unboxed.length (bits bv) * 64)
     {-# INLINE size #-}
 
-{-| @(rank sbv n)@ computes the number of ones up to, but not including the bit
-    at index @n@
+{-| @(rank sbv p)@ computes the number of ones up to, but not including the bit
+    at index @p@ (0-indexed)
 
 >>> rank (prepare (fromList [0, maxBound])) 66
 Just 2
@@ -591,15 +592,15 @@ Just 2
     vector
 
 prop> rank (prepare v) 0 == Just 0
-prop> let sv = prepare v in fmap getCount (rank sv (size sv)) == Just (Unboxed.sum (Unboxed.map (getCount . popCount) v))
+prop> let sbv = prepare v in fmap getCount (rank sbv (size sbv)) == Just (Unboxed.sum (Unboxed.map (getCount . popCount) v))
 
-    This returns a valid value wrapped in a `Just` when @0 <= n <= size sbv@
+    This returns a valid value wrapped in a `Just` when @0 <= p <= size sbv@:
 
-prop> let sbv = prepare v in not (0 <= n && n <= size sbv) || (rank sbv n > Nothing)
+prop> let sbv = prepare v in not (0 <= p && p <= size sbv) || (rank sbv p > Nothing)
 
-    ... and returns `Nothing` otherwise
+    ... and returns `Nothing` otherwise:
 
-prop> let sbv = prepare v in (0 <= n && n <= size sbv) || (rank sbv n == Nothing)
+prop> let sbv = prepare v in (0 <= p && p <= size sbv) || (rank sbv p == Nothing)
 -}
 rank :: SuccinctBitVector a => a -> Position -> Maybe Count
 rank sbv p0 = do
@@ -608,6 +609,7 @@ rank sbv p0 = do
     guard (p1 == 0)
     return c1
 
+{-| @(select sbv c)@ computes the location of the @\'c\'@th one bit (0-indexed)
 select :: SuccinctBitVector a => a -> Count -> Maybe Position
 select sbv c0 = do
     n <- rank sbv (size sbv)
