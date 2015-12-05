@@ -25,9 +25,10 @@ Source-Repository head
 Library
     HS-Source-Dirs: src
     Build-Depends:
-        base    >= 4.5 && < 5   ,
-        deepseq           < 1.5 ,
-        vector  >= 0.6 && < 0.12
+        base       >= 4.5 && < 5   ,
+        deepseq              < 1.5 ,
+        QuickCheck >= 2.8 && < 2.9 ,
+        vector     >= 0.6 && < 0.12
     Exposed-Modules: Succinct.Vector
     GHC-Options: -O2 -Wall
     Default-Language: Haskell2010
@@ -39,10 +40,9 @@ Test-Suite tests
     GHC-Options: -O2 -Wall
     Default-Language: Haskell2010
     Build-Depends:
-        base            >= 4      && < 5   ,
-        doctest         >= 0.9.12 && < 0.11,
-        QuickCheck      >= 2.8    && < 2.9 ,
-        template-haskell,
+        base       >= 4      && < 5   ,
+        doctest    >= 0.9.12 && < 0.11,
+        QuickCheck >= 2.8    && < 2.9 ,
         succinct-vector
 
 Benchmark bench

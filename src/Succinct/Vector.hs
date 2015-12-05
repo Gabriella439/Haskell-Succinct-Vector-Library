@@ -1,60 +1,114 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 
-{-| Example usage of this module:
+{-| This module lets you index a vector of bits so that you can efficiently
+    navigate those bits using `rank` and `select`:
+
+    * `rank` lets you count how many one or zero bits there are up to a given
+      position
+
+    * `select` lets you find the @\'n\'@th one or zero
+
+    Many other operations you might want to perform can be reduced to the
+    primitive `rank` and `select` functions.  Think of this module as a building
+    block for building higher-level high-performance algorithms.
+
+    This module is based on the paper:
+
+    <http://vigna.di.unimi.it/ftp/papers/Broadword.pdf Vigna, Sebastiano. "Broadword implementation of rank/select queries." Experimental Algorithms. Springer Berlin Heidelberg, 2008. 154-168.>
+
+    ... which shows how to implement an efficient index that provides fast O(1)
+    `rank` and `select` operations.
+
+    This is not the only possible way to index a bit vector to provide `rank`
+    and `select` and there are other implementations that provide varying
+    tradeoffs.  I picked this implementation because it is the most efficient
+    implementation that provides constant-time `rank` and `select` operations,
+    no matter how large the input bit vector is.
+
+    The disadvantage of this implementation is that it requires a substantial
+    amount of space for the index (87.5% of the size of the original input bit
+    vector).  Other implementations can index the bit vector in a small fraction
+    of the space, but at the expense of O(log N) operations, such as this one:
+
+    <https://www.cs.cmu.edu/~dga/papers/zhou-sea2013.pdf Zhou, Dong, David G. Andersen, and Michael Kaminsky. "Space-efficient, high-performance rank and select structures on uncompressed bit sequences." Experimental Algorithms. Springer Berlin Heidelberg, 2013. 151-163.>
+
+    Here is an example of how you would use this module:
 
 >>> import Data.Vector.Unboxed
->>> let v = fromList [maxBound, 0] :: Vector Word64
+>>> -- An example 128-bit input vector
+>>> let v  = fromList [0x0000000000000001, 0x0000000000000002] :: Vector Word64
+>>> -- Build an index from the bit vector
 >>> let bv = prepare v
->>> index bv 63
+
+>>> index bv   0  -- The lowest bit of the first `Word64`
 Just True
->>> index bv 64
+>>> index bv   1  -- The second-lowest bit of the first `Word64`
 Just False
->>> rank bv 27
-Just 27
->>> rank bv 128
-Just 64
+>>> index bv  64  -- The lowest bit of the second `Word64`
+Just False
+>>> index bv  65  -- The second-lowest bit of the second `Word64`
+Just True
+>>> index bv 129  -- Out-of-bounds `index` fails
+Nothing
 
-    This module is based on the paper "Broadword Implementation of Rank/Select
-    Queries":
+>>> rank bv   0  -- Count how many ones in the first 0 bits (always returns 0)
+Just 0
+>>> rank bv   1  -- Count how many ones in the first 1 bits
+Just 1
+>>> rank bv   2  -- Count how many ones in the first 2 bits
+Just 1
+>>> rank bv 128  -- Count how many ones in all 128 bits
+Just 2
+>>> rank bv 129  -- Out-of-bounds `rank` fails
+Nothing
 
-    <http://vigna.di.unimi.it/ftp/papers/Broadword.pdf>
+>>> select bv 0  -- Find the 0-indexed position of the first one bit
+Just 0
+>>> select bv 1  -- Find the 0-indexed position of the second one bit
+Just 65
+>>> select bv 2  -- Out-of-bounds `select` fails
+Nothing
+
 -}
 
 module Succinct.Vector (
     -- * Construction
       BitVector
     , prepare
+    , index
 
     -- * Queries
     , Position(..)
     , Count(..)
     , SuccinctBitVector(..)
-    , index
     , rank
     , select
+
+    -- * Internals
+    , BasicBlock(..)
+    , IntermediateBlock(..)
+    , SuperBlock(..)
     ) where
 
 -- TODO: Compress original bit vector
 -- TODO: Carefully examine all `fromIntegral` uses
 
 import Control.DeepSeq (NFData(..))
-import Control.Monad (guard)
+import Control.Monad (guard, replicateM)
 import Data.Bits (Bits, (.|.), (.&.), xor, complement)
-import Data.Foldable (toList)
+import Data.List (sort)
 import Data.Word (Word16, Word64)
 import Prelude hiding ((>>))  -- Use `(>>)` for right bit shift in this module
+import Test.QuickCheck (Arbitrary(..), choose)
 
 import qualified Data.Bits           as Bits
 import qualified Data.Vector.Unboxed as Unboxed
-import qualified Numeric
+import qualified Test.QuickCheck     as QuickCheck
 
 -- $setup
--- >>> :set -XScopedTypeVariables
 -- >>> import Data.Vector.Unboxed as Unboxed
 -- >>> import Test.QuickCheck
 -- >>> instance (Unbox a, Arbitrary a) => Arbitrary (Vector a) where arbitrary = fmap fromList arbitrary
--- >>> instance Arbitrary Count where arbitrary = fmap Count arbitrary
--- >>> instance Arbitrary Position where arbitrary = fmap Position arbitrary
 
 {-| Like `index` except that the bit index is not checked
 
@@ -66,7 +120,8 @@ unsafeIndex i n = Bits.testBit w8 r
     (q, r) = quotRem (getPosition n) 64
     w8 = Unboxed.unsafeIndex (bits i) q
 
-{-| @(index i n)@ retrieves the bit at the index @n@
+{-| A `BitVector` contains the original input vector and you can use
+    @(index i n)@ retrieves the bit at index @n@ from the original vector
 
 prop> let bv = prepare (Unboxed.fromList w64s) in index bv n == do r1 <- rank bv n; r2 <- rank bv (n + 1); return (r1 < r2)
 -}
@@ -93,9 +148,12 @@ data BitVector = BitVector
 instance NFData BitVector where
     rnf i = i `seq` ()
 
+instance Arbitrary BitVector where
+    arbitrary = fmap (prepare . Unboxed.fromList) arbitrary
+
 data Select9 = Select9
-    { primary   :: !(Unboxed.Vector Int)
-    , secondary :: !(Unboxed.Vector Word64)
+    { _primary   :: !(Unboxed.Vector Int)
+    , _secondary :: !(Unboxed.Vector Word64)
     } deriving (Show)
 
 data Level = First | Second
@@ -169,11 +227,17 @@ newtype Position = Position { getPosition :: Int } deriving (Eq, Num, Ord)
 instance Show Position where
     show (Position n) = show n
 
+instance Arbitrary Position where
+    arbitrary = fmap Position arbitrary
+
 -- | A count of bits
 newtype Count = Count { getCount :: Word64 } deriving (Eq, Num, Ord)
 
 instance Show Count where
     show (Count w64) = show w64
+
+instance Arbitrary Count where
+    arbitrary = fmap Count arbitrary
 
 {-| Count how many ones there are in the given `Word64`
 
@@ -194,13 +258,49 @@ popCount x0 = Count ((x3 * 0x0101010101010101) >> 56)
 {-# INLINE popCount #-}
 
 {-|
-prop> let (p1, c1) = partialSelect (sbv :: Word64) c0; (c2, p2) = partialRank (sbv :: Word64) p1 in not (c0 < fst (partialRank sbv (size sbv))) || c0 == c1 + c2
-prop> let (c1, p1) = partialRank (sbv :: Word64) p0; (p2, c2) = partialSelect (sbv :: Word64) c1 in not (0 <= p0 && p0 <= size sbv) || not (c1 < fst (partialRank sbv (size sbv))) || p0 <= p1 + p2
 -}
 class SuccinctBitVector v where
     partialRank   :: v -> Position -> (Count   , Position)
     partialSelect :: v -> Count    -> (Position, Count   )
     size          :: v -> Position
+
+{-| @(rank sbv p)@ computes the number of ones up to, but not including the bit
+    at index @p@ (0-indexed)
+
+>>> rank (prepare (fromList [0, maxBound])) 66
+Just 2
+
+    The bits are 0-indexed, so @rank sbv 0@ always returns 0 and
+    @rank sbv (size sbv)@ returns the total number of ones in the succinct bit
+    vector
+
+prop> rank (prepare v) 0 == Just 0
+prop> let sbv = prepare v in fmap getCount (rank sbv (size sbv)) == Just (Unboxed.sum (Unboxed.map (getCount . popCount) v))
+
+    This returns a valid value wrapped in a `Just` when @0 <= p <= size sbv@:
+
+prop> let sbv = prepare v in not (0 <= p && p <= size sbv) || (rank sbv p > Nothing)
+
+    ... and returns `Nothing` otherwise:
+
+prop> let sbv = prepare v in (0 <= p && p <= size sbv) || (rank sbv p == Nothing)
+-}
+rank :: SuccinctBitVector a => a -> Position -> Maybe Count
+rank sbv p0 = do
+    guard (0 <= p0 && p0 <= size sbv)
+    let (c1, p1) = partialRank sbv p0
+    guard (p1 == 0)
+    return c1
+
+{-| @(select sbv c)@ computes the location of the @\'c\'@th one bit (0-indexed)
+-}
+select :: SuccinctBitVector a => a -> Count -> Maybe Position
+select sbv c0 = do
+    n <- rank sbv (size sbv)
+    guard (0 <= c0 && c0 < n)
+    let (p1, c1) = partialSelect sbv c0
+    guard (c1 == 0)
+    return p1
 
 instance SuccinctBitVector Word64 where
     partialRank w64 (Position n) = (popCount (w64 .&. ((Bits.shiftL 0x1 n) - 1)), 0)
@@ -236,21 +336,47 @@ instance SuccinctBitVector Word64 where
     size _ = 64
     {-# INLINE size #-}
 
-{-| A non-decreasing list of 7 9-bit counts, packed into one `Word64`
+{-| A `BasicBlock` caches the ranks of 8 consecutive `Word64`s relative to the
+    rank of the first `Word64`.  Each rank requires 9 bits of space since the
+    maximum relative rank is @7 * 64 = 448@.  The rank of the first `Word64`
+    relative to itself is always 0 so we never need to store it, meaning that we
+    can store the remaining 7 ranks in @7 * 9 = 63@ bits laid out like this:
+
+> --           Rank of Word64 #0 omitted since it's always 0
+> Bits #00-08: Rank of Word64 #1
+> Bits #09-17: Rank of Word64 #2
+> Bits #18-26: Rank of Word64 #3
+> Bits #27-35: Rank of Word64 #4
+> Bits #36-44: Rank of Word64 #5
+> Bits #45-53: Rank of Word64 #6
+> Bits #54-62: Rank of Word64 #7
+> Bit  #63   : 0
 
     Bits are 0-indexed and ordered from the least significant (bit #0) to the
-    most significant (bit #63):
-
-    Bits #00-08: Word #0
-    Bits #09-17: Word #1
-    Bits #18-26: Word #2
-    Bits #27-35: Word #3
-    Bits #36-44: Word #4
-    Bits #45-53: Word #5
-    Bits #54-62: Word #6
-    Bit  #64   : 0
+    most significant (bit #63)
 -}
-newtype BasicBlock = BasicBlock Word64 deriving (Num, Show)
+newtype BasicBlock = BasicBlock { getBasicBlock :: Word64 } deriving (Num, Show)
+
+instance Arbitrary BasicBlock where
+    arbitrary = do
+        r1 <- QuickCheck.choose ( 0, 511)
+        r2 <- QuickCheck.choose (r1, 511)
+        r3 <- QuickCheck.choose (r2, 511)
+        r4 <- QuickCheck.choose (r3, 511)
+        r5 <- QuickCheck.choose (r4, 511)
+        r6 <- QuickCheck.choose (r5, 511)
+        r7 <- QuickCheck.choose (r6, 511)
+        return
+            (BasicBlock
+                (   r1
+                .|. r2 <<  9
+                .|. r3 << 18
+                .|. r4 << 27
+                .|. r5 << 36
+                .|. r6 << 45
+                .|. r7 << 54
+                )
+            )
 
 instance SuccinctBitVector BasicBlock where
     partialRank (BasicBlock s) (Position i) =
@@ -278,9 +404,49 @@ partialRankLevel0 v (Position i) = (Count n, Position q)
     (p, q) = i `quotRem` 512
 {-# INLINE partialRankLevel0 #-}
 
+{-| An `IntermediateBlock` caches the ranks of up to 64 consecutive
+    `BasicBlock`s relative to the rank of the first `BasicBlock`.  Since each
+    `BasicBlock` represents @8 * 64 = 512@ bits worth of data the maximum
+    relative rank is @63 * 512 = 32256@ which can be stored in 15 bits, but we
+    round up to 16 bits for alignment reasons.  This means that we store four
+    ranks per `Word64` for up to 16 `Word64`s, laid out like this:
+
+> Word64 #00 - Bits #00-15: Rank of BasicBlock #00 (Always 0)
+> Word64 #00 - Bits #16-31: Rank of BasicBlock #01
+> Word64 #00 - Bits #32-47: Rank of BasicBlock #02
+> Word64 #00 - Bits #48-63: Rank of BasicBlock #03
+> Word64 #01 - Bits #00-15: Rank of BasicBlock #04
+> Word64 #01 - Bits #16-31: Rank of BasicBlock #04
+> Word64 #01 - Bits #32-47: Rank of BasicBlock #06
+> Word64 #01 - Bits #48-63: Rank of BasicBlock #07
+> ...
+> Word64 #15 - Bits #00-15: Rank of BasicBlock #60
+> Word64 #15 - Bits #16-31: Rank of BasicBlock #61
+> Word64 #15 - Bits #32-47: Rank of BasicBlock #62
+> Word64 #15 - Bits #48-63: Rank of BasicBlock #63
+
+    Bits are 0-indexed and ordered from the least significant (bit #0) to the
+    most significant (bit #63)
+-}
 newtype IntermediateBlock = IntermediateBlock
     { getIntermediateBlock :: Unboxed.Vector Word64
     } deriving (Show)
+
+instance Arbitrary IntermediateBlock where
+    arbitrary = do
+        n      <- choose (0, 64)
+        w16s_0 <- replicateM n (choose (0, 65535))
+        let w64s (w16_0:w16_1:w16_2:w16_3:w16s) =
+                let w64 =   w16_0
+                        .|. w16_1 << 16
+                        .|. w16_2 << 32
+                        .|. w16_3 << 48
+                in  w64:w64s w16s
+            w64s [w16_0, w16_1, w16_2] = w64s [w16_0, w16_1, w16_2, 0]
+            w64s [w16_0, w16_1]        = w64s [w16_0, w16_1, 0    , 0]
+            w64s [w16_0]               = w64s [w16_0, 0    , 0    , 0]
+            w64s []                    = []
+        return (IntermediateBlock (Unboxed.fromList (w64s (sort w16s_0))))
 
 instance SuccinctBitVector IntermediateBlock where
     partialRank (IntermediateBlock w64s) (Position i) = (Count r, Position i')
@@ -300,7 +466,7 @@ instance SuccinctBitVector IntermediateBlock where
             =   fromIntegral
             (   ( Unboxed.sum
                     ( Unboxed.map
-                        (\w64 -> (((w64 `leu16` (r * l16)) >> 15) * l16) >> 48)
+                        (\w -> (((w `leu16` (r * l16)) >> 15) * l16) >> 48)
                         w64s
                     )
                 *   l16
@@ -320,9 +486,44 @@ instance SuccinctBitVector IntermediateBlock where
     size (IntermediateBlock w64s) = Position (512 * Unboxed.length w64s)
     {-# INLINE size #-}
 
+{-| A `SuperBlock` caches the ranks of up to 8 consecutive `IntermediateBlock`s
+    relative to the rank of the first `IntermediateBlock`.  Since each
+    `IntermediateBlock` represents @8 * 512 = 4096@ bits worth of data the
+    maximum relative rank is @7 * 4096 = 28672@ which can be stored in 15 bits,
+    but we round up to 16 bits for alignment reasons.  This means that we store
+    four ranks per `Word64` for up to 16 `Word64`s, laid out like this:
+
+> Word64 #0 - Bits #00-15: Rank of IntermediateBlock #00 (Always 0)
+> Word64 #0 - Bits #16-31: Rank of IntermediateBlock #01
+> Word64 #0 - Bits #32-47: Rank of IntermediateBlock #02
+> Word64 #0 - Bits #48-63: Rank of IntermediateBlock #03
+> Word64 #1 - Bits #00-15: Rank of IntermediateBlock #04
+> Word64 #1 - Bits #16-31: Rank of IntermediateBlock #04
+> Word64 #1 - Bits #32-47: Rank of IntermediateBlock #06
+> Word64 #1 - Bits #48-63: Rank of IntermediateBlock #07
+
+    Bits are 0-indexed and ordered from the least significant (bit #0) to the
+    most significant (bit #63)
+-}
 newtype SuperBlock = SuperBlock
     { getSuperBlock :: Unboxed.Vector Word64
     } deriving (Show)
+
+instance Arbitrary SuperBlock where
+    arbitrary = do
+        n      <- choose (0, 8)
+        w16s_0 <- replicateM n (choose (0, 65535))
+        let w64s (w16_0:w16_1:w16_2:w16_3:w16s) =
+                let w64 =   w16_0
+                        .|. w16_1 << 16
+                        .|. w16_2 << 32
+                        .|. w16_3 << 48
+                in  w64:w64s w16s
+            w64s [w16_0, w16_1, w16_2] = w64s [w16_0, w16_1, w16_2, 0]
+            w64s [w16_0, w16_1]        = w64s [w16_0, w16_1, 0    , 0]
+            w64s [w16_0]               = w64s [w16_0, 0    , 0    , 0]
+            w64s []                    = []
+        return (SuperBlock (Unboxed.fromList (w64s (sort w16s_0))))
 
 instance SuccinctBitVector SuperBlock where
     partialRank (SuperBlock w64s) (Position i) = (Count r, Position i')
@@ -342,7 +543,7 @@ instance SuccinctBitVector SuperBlock where
             =   fromIntegral
             (   ( Unboxed.sum
                     ( Unboxed.map
-                        (\w64 -> (((w64 `leu16` (r * l16)) >> 15) * l16) >> 48)
+                        (\w -> (((w `leu16` (r * l16)) >> 15) * l16) >> 48)
                         w64s
                     )
                 *   l16
@@ -393,20 +594,20 @@ prepare v = BitVector
                 i7 = i6 + 1
                 i8 = i7 + 1
 
-                count :: Position -> Count
-                count i =
+                countBits :: Position -> Count
+                countBits i =
                     if i < Position len
                     then popCount (Unboxed.unsafeIndex v (getPosition i))
                     else 0
 
-                r1 =      count i0
-                r2 = r1 + count i1
-                r3 = r2 + count i2
-                r4 = r3 + count i3
-                r5 = r4 + count i4
-                r6 = r5 + count i5
-                r7 = r6 + count i6
-                r8 = r7 + count i7
+                r1 =      countBits i0
+                r2 = r1 + countBits i1
+                r3 = r2 + countBits i2
+                r4 = r3 + countBits i3
+                r5 = r4 + countBits i4
+                r6 = r5 + countBits i5
+                r7 = r6 + countBits i6
+                r8 = r7 + countBits i7
 
                 r' = getCount r1
                  .|. getCount r2 <<  9
@@ -532,7 +733,6 @@ instance SuccinctBitVector BitVector where
             p1              = Position (basicBlockBegin * 512)
             c1              = r - Count (Unboxed.unsafeIndex rank9_ (basicBlockBegin * 2))
             numBasicBlocks  = basicBlockEnd - basicBlockBegin
-            span            = 2 * numBasicBlocks
             secondaryBegin  = basicBlockBegin * 2
         in  case () of
               _ | numBasicBlocks < 2 ->
@@ -554,7 +754,7 @@ instance SuccinctBitVector BitVector where
                     in  (p1 + p2 + p3 + p4, c4)
                 | numBasicBlocks < 64 ->
                     let superBlock        = SuperBlock (Unboxed.unsafeSlice secondaryBegin 2 secondary_)
-                        intermediateBlock = IntermediateBlock (Unboxed.unsafeSlice (secondaryBegin + 2) (min span 18 - 2) secondary_)
+                        intermediateBlock = IntermediateBlock (Unboxed.unsafeSlice (secondaryBegin + 2) (min (2 * numBasicBlocks) 18 - 2) secondary_)
                         basicBlockIndex   = getPosition (p1 + p2 + p3     ) `quot` 512
                         w64Index          = getPosition (p1 + p2 + p3 + p4) `quot` 64
                         basicBlock        = BasicBlock (Unboxed.unsafeIndex rank9_ (basicBlockIndex * 2 + 1))
@@ -580,40 +780,3 @@ instance SuccinctBitVector BitVector where
 
     size bv = Position (Unboxed.length (bits bv) * 64)
     {-# INLINE size #-}
-
-{-| @(rank sbv p)@ computes the number of ones up to, but not including the bit
-    at index @p@ (0-indexed)
-
->>> rank (prepare (fromList [0, maxBound])) 66
-Just 2
-
-    The bits are 0-indexed, so @rank sbv 0@ always returns 0 and
-    @rank sbv (size sbv)@ returns the total number of ones in the succinct bit
-    vector
-
-prop> rank (prepare v) 0 == Just 0
-prop> let sbv = prepare v in fmap getCount (rank sbv (size sbv)) == Just (Unboxed.sum (Unboxed.map (getCount . popCount) v))
-
-    This returns a valid value wrapped in a `Just` when @0 <= p <= size sbv@:
-
-prop> let sbv = prepare v in not (0 <= p && p <= size sbv) || (rank sbv p > Nothing)
-
-    ... and returns `Nothing` otherwise:
-
-prop> let sbv = prepare v in (0 <= p && p <= size sbv) || (rank sbv p == Nothing)
--}
-rank :: SuccinctBitVector a => a -> Position -> Maybe Count
-rank sbv p0 = do
-    guard (0 <= p0 && p0 <= size sbv)
-    let (c1, p1) = partialRank sbv p0
-    guard (p1 == 0)
-    return c1
-
-{-| @(select sbv c)@ computes the location of the @\'c\'@th one bit (0-indexed)
-select :: SuccinctBitVector a => a -> Count -> Maybe Position
-select sbv c0 = do
-    n <- rank sbv (size sbv)
-    guard (0 <= c0 && c0 < n)
-    let (p1, c1) = partialSelect sbv c0
-    guard (c1 == 0)
-    return p1
