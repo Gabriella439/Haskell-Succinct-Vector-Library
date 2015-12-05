@@ -38,6 +38,7 @@ module Succinct.Vector (
 -- TODO: Carefully examine all `fromIntegral` uses
 
 import Control.DeepSeq (NFData(..))
+import Control.Monad (guard)
 import Data.Bits (Bits, (.|.), (.&.), xor, complement)
 import Data.Foldable (toList)
 import Data.Word (Word16, Word64)
@@ -579,34 +580,38 @@ instance SuccinctBitVector BitVector where
     size bv = Position (Unboxed.length (bits bv) * 64)
     {-# INLINE size #-}
 
-{-| @(rank i n)@ computes the number of ones up to, but not including the bit at
-    index @n@
+{-| @(rank sbv n)@ computes the number of ones up to, but not including the bit
+    at index @n@
 
 >>> rank (prepare (fromList [0, maxBound])) 66
 Just 2
 
-    The bits are 0-indexed, so @rank i 0@ always returns 0 and @rank i (size i)@
-    returns the total number of ones in the bit vector
+    The bits are 0-indexed, so @rank sbv 0@ always returns 0 and
+    @rank sbv (size sbv)@ returns the total number of ones in the succinct bit
+    vector
 
 prop> rank (prepare v) 0 == Just 0
 prop> let sv = prepare v in fmap getCount (rank sv (size sv)) == Just (Unboxed.sum (Unboxed.map (getCount . popCount) v))
 
-    This returns a valid value wrapped in a `Just` when:
+    This returns a valid value wrapped in a `Just` when @0 <= n <= size sbv@
 
-> 0 <= n <= size i
+prop> let sbv = prepare v in not (0 <= n && n <= size sbv) || (rank sbv n > Nothing)
 
     ... and returns `Nothing` otherwise
 
-prop> let sv = prepare v in (0 <= n && n <= size sv) || (rank sv n == Nothing)
+prop> let sbv = prepare v in (0 <= n && n <= size sbv) || (rank sbv n == Nothing)
 -}
 rank :: SuccinctBitVector a => a -> Position -> Maybe Count
-rank sbv p =
-    if 0 <= p && p <= size sbv
-    then Just (fst (partialRank sbv p))
-    else Nothing
+rank sbv p0 = do
+    guard (0 <= p0 && p0 <= size sbv)
+    let (c1, p1) = partialRank sbv p0
+    guard (p1 == 0)
+    return c1
 
 select :: SuccinctBitVector a => a -> Count -> Maybe Position
-select sbv n =
-    if 0 <= n && and (toList (fmap (n <=) (rank sbv (size sbv))))
-    then Just (fst (partialSelect sbv n))
-    else Nothing
+select sbv c0 = do
+    n <- rank sbv (size sbv)
+    guard (0 <= c0 && c0 < n)
+    let (p1, c1) = partialSelect sbv c0
+    guard (c1 == 0)
+    return p1
