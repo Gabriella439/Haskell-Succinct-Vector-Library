@@ -434,7 +434,7 @@ newtype IntermediateBlock = IntermediateBlock
 
 instance Arbitrary IntermediateBlock where
     arbitrary = do
-        n      <- choose (0, 64)
+        n      <- choose (0, 63)
         w16s_0 <- replicateM n (choose (0, 65535))
         let w64s (w16_0:w16_1:w16_2:w16_3:w16s) =
                 let w64 =   w16_0
@@ -446,7 +446,7 @@ instance Arbitrary IntermediateBlock where
             w64s [w16_0, w16_1]        = w64s [w16_0, w16_1, 0    , 0]
             w64s [w16_0]               = w64s [w16_0, 0    , 0    , 0]
             w64s []                    = []
-        return (IntermediateBlock (Unboxed.fromList (w64s (sort w16s_0))))
+        return (IntermediateBlock (Unboxed.fromList (w64s (0:sort w16s_0))))
 
 instance SuccinctBitVector IntermediateBlock where
     partialRank (IntermediateBlock w64s) (Position i) = (Count r, Position i')
@@ -511,7 +511,7 @@ newtype SuperBlock = SuperBlock
 
 instance Arbitrary SuperBlock where
     arbitrary = do
-        n      <- choose (0, 8)
+        n      <- choose (0, 7)
         w16s_0 <- replicateM n (choose (0, 65535))
         let w64s (w16_0:w16_1:w16_2:w16_3:w16s) =
                 let w64 =   w16_0
@@ -523,7 +523,7 @@ instance Arbitrary SuperBlock where
             w64s [w16_0, w16_1]        = w64s [w16_0, w16_1, 0    , 0]
             w64s [w16_0]               = w64s [w16_0, 0    , 0    , 0]
             w64s []                    = []
-        return (SuperBlock (Unboxed.fromList (w64s (sort w16s_0))))
+        return (SuperBlock (Unboxed.fromList (w64s (0:sort w16s_0))))
 
 instance SuccinctBitVector SuperBlock where
     partialRank (SuperBlock w64s) (Position i) = (Count r, Position i')
@@ -577,7 +577,7 @@ prepare v = BitVector
     len = Unboxed.length v
 
     -- TODO: What happens if `len == 0`?
-    vRankLen = 2 * (((len - 1) `div` 8) + 1) + 1
+    vRankLen = 2 * (((len + 7) `div` 8) + 1)
 
     vRank = Unboxed.unfoldrN vRankLen iStep iBegin
       where
