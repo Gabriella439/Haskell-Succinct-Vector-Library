@@ -1,4 +1,5 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE CPP                        #-}
 
 {-| This module lets you index a vector of bits so that you can efficiently
     navigate those bits using `rank` and `select`:
@@ -102,7 +103,11 @@ import Prelude hiding ((>>))  -- Use `(>>)` for right bit shift in this module
 import Test.QuickCheck (Arbitrary(..), choose)
 
 import qualified Data.Bits           as Bits
+#ifdef LIQUID_HASKELL
+import qualified Data.Vector         as Unboxed
+#else
 import qualified Data.Vector.Unboxed as Unboxed
+#endif
 import qualified Test.QuickCheck     as QuickCheck
 
 -- $setup
@@ -176,7 +181,12 @@ l8 = 0x0101010101010101
 {-# INLINE l8 #-}
 
 h8 :: Word64
-h8 = 0x8080808080808080
+h8 = ox8080808080808080
+  where
+    ox8080808080808080 = 0x2020202020202020
+                       + 0x2020202020202020
+                       + 0x2020202020202020
+                       + 0x2020202020202020
 {-# INLINE h8 #-}
 
 l9 :: Word64
@@ -184,7 +194,10 @@ l9 = 0x0040201008040201
 {-# INLINE l9 #-}
 
 h9 :: Word64
-h9 = 0x4020100804020100
+h9 = ox4020100804020100
+  where
+    ox4020100804020100 = 0x2010080402010080
+                       + 0x2010080402010080
 {-# INLINE h9 #-}
 
 l16 :: Word64
@@ -192,7 +205,12 @@ l16 = 0x0001000100010001
 {-# INLINE l16 #-}
 
 h16 :: Word64
-h16 = 0x8000800080008000
+h16 = ox8000800080008000
+  where
+    ox8000800080008000 = 0x2000200020002000
+                       + 0x2000200020002000
+                       + 0x2000200020002000
+                       + 0x2000200020002000
 {-# INLINE h16 #-}
 
 le8 :: Word64 -> Word64 -> Word64
@@ -246,9 +264,13 @@ instance Arbitrary Count where
 popCount :: Word64 -> Count
 popCount x0 = Count ((x3 * 0x0101010101010101) >> 56)
   where
-    x1 = x0 - ((x0 .&. 0xAAAAAAAAAAAAAAAA) >> 1)
+    x1 = x0 - ((x0 .&. oxAAAAAAAAAAAAAAAA) >> 1)
     x2 = (x1 .&. 0x3333333333333333) + ((x1 >> 2) .&. 0x3333333333333333)
     x3 = (x2 + (x2 >> 4)) .&. 0x0F0F0F0F0F0F0F0F
+    oxAAAAAAAAAAAAAAAA = 0x2222222222222222
+                       + 0x3333333333333333
+                       + 0x2222222222222222
+                       + 0x3333333333333333
 {-  IMPLEMENTATION NOTES:
 
     This is "Algorithm 1" from this paper:
@@ -309,13 +331,21 @@ instance SuccinctBitVector Word64 where
     partialSelect x (Count r) =
         (Position (fromIntegral (b + ((((s3 `le8` (l * l8)) >> 7) * l8) >> 56))), 0)
       where
-        s0 = x - ((x .&. 0xAAAAAAAAAAAAAAAA) >> 1)
+        s0 = x - ((x .&. oxAAAAAAAAAAAAAAAA) >> 1)
         s1 = (s0 .&. 0x3333333333333333) + ((s0 >> 2) .&. 0x3333333333333333)
         s2 = ((s1 + (s1 >> 4)) .&. 0x0F0F0F0F0F0F0F0F) * l8
-        b  = ((((s2 `le8` (r * l8)) >> 7) * l8) >> 53) .&. 0xFFFFFFFFFFFFFFF8
+        b  = ((((s2 `le8` (r * l8)) >> 7) * l8) >> 53) .&. complement 0x7
         b' = fromIntegral b
         l  = r - (((s2 << 8) >> b') .&. 0xFF)
-        s3 = ((0x0 `lt8` (((x >> b' .&. 0xFF) * l8) .&. 0x8040201008040201)) >> 0x7) * l8
+        s3 = ((0x0 `lt8` (((x >> b' .&. 0xFF) * l8) .&. ox8040201008040201)) >> 0x7) * l8
+        oxAAAAAAAAAAAAAAAA = 0x2222222222222222
+                           + 0x3333333333333333
+                           + 0x2222222222222222
+                           + 0x3333333333333333
+        ox8040201008040201 = 0x2010080402010081
+                           + 0x2010080402010080
+                           + 0x2010080402010080
+                           + 0x2010080402010080
     {-# INLINE partialSelect #-}
     {-  IMPLEMENTATION NOTES:
 
