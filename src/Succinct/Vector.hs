@@ -1,6 +1,8 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE CPP                        #-}
 
+#define LIQUID_HASKELL
+
 {-| This module lets you index a vector of bits so that you can efficiently
     navigate those bits using `rank` and `select`:
 
@@ -157,9 +159,15 @@ instance Arbitrary BitVector where
     arbitrary = fmap (prepare . Unboxed.fromList) arbitrary
 
 data Select9 = Select9
-    { _primary   :: !(Unboxed.Vector Int)
-    , _secondary :: !(Unboxed.Vector Word64)
+    { primary_   :: !(Unboxed.Vector Int)
+    , secondary_ :: !(Unboxed.Vector Word64)
     } deriving (Show)
+{-@
+data Select9 = Select9
+    { primary_   :: (Unboxed.Vector { v : Int | 0 <= v })
+    , secondary_ :: (Unboxed.Vector Word64)
+    }
+@-}
 
 data Level = First | Second
 
@@ -241,12 +249,22 @@ x `leu16` y
 
 -- | A 0-indexed bit position
 newtype Position = Position { getPosition :: Int } deriving (Eq, Num, Ord)
+{-@
+data Position = Position { getPosition :: { v : Int | 0 <= v } }
+@-}
 
 instance Show Position where
     show (Position n) = show n
 
+-- I assume that `QuickCheck` implemented this correctly :)
+{-@
+assume arbitraryNonNegative :: QuickCheck.Gen { v : Int | 0 <= v }
+@-}
+arbitraryNonNegative :: QuickCheck.Gen Int
+arbitraryNonNegative = fmap QuickCheck.getNonNegative arbitrary
+
 instance Arbitrary Position where
-    arbitrary = fmap Position arbitrary
+    arbitrary = fmap Position arbitraryNonNegative
 
 -- | A count of bits
 newtype Count = Count { getCount :: Word64 } deriving (Eq, Num, Ord)
@@ -256,6 +274,15 @@ instance Show Count where
 
 instance Arbitrary Count where
     arbitrary = fmap Count arbitrary
+
+-- `Word64`s always map onto a non-negative integer, but we have to inform
+-- Liquid Haskell of that fact
+{-@
+assume natFromWord64 :: Word64 -> { v : Int | 0 <= v }
+@-}
+natFromWord64 :: Word64 -> Int
+natFromWord64 = fromIntegral
+{-# INLINE natFromWord64 #-}
 
 {-| Count how many ones there are in the given `Word64`
 
@@ -329,7 +356,7 @@ instance SuccinctBitVector Word64 where
     {-# INLINE partialRank #-}
 
     partialSelect x (Count r) =
-        (Position (fromIntegral (b + ((((s3 `le8` (l * l8)) >> 7) * l8) >> 56))), 0)
+        (Position (natFromWord64 (b + ((((s3 `le8` (l * l8)) >> 7) * l8) >> 56))), 0)
       where
         s0 = x - ((x .&. oxAAAAAAAAAAAAAAAA) >> 1)
         s1 = (s0 .&. 0x3333333333333333) + ((s0 >> 2) .&. 0x3333333333333333)
@@ -419,7 +446,7 @@ instance SuccinctBitVector BasicBlock where
 
     partialSelect (BasicBlock s) (Count r) = (Position (64 * o), Count r')
       where
-        o  = fromIntegral (((((s `leu9` (r * l9)) >> 8) * l9) >> 54) .&. 7)
+        o  = natFromWord64 (((((s `leu9` (r * l9)) >> 8) * l9) >> 54) .&. 7)
         r' = r - ((s >> fromIntegral (((o - 1) .&. 7) * 9)) .&. 0x1FF)
     {-# INLINE partialSelect #-}
 
@@ -493,16 +520,13 @@ instance SuccinctBitVector IntermediateBlock where
     partialSelect (IntermediateBlock w64s) (Count r) = (Position i, Count r')
       where
         basicBlockIndex
-            =   fromIntegral
-            (   ( Unboxed.sum
+            =   natFromWord64
+                ( Unboxed.sum
                     ( Unboxed.map
                         (\w -> (((w `leu16` (r * l16)) >> 15) * l16) >> 48)
                         w64s
                     )
-                *   l16
-                )
-            >>  48
-            ) - 1
+                ) - 1
 
         i = basicBlockIndex << 9
 
@@ -570,16 +594,13 @@ instance SuccinctBitVector SuperBlock where
     partialSelect (SuperBlock w64s) (Count r) = (Position i, Count r')
       where
         intermediateBlockIndex
-            =   fromIntegral
-            (   ( Unboxed.sum
+            =   natFromWord64
+                ( Unboxed.sum
                     ( Unboxed.map
                         (\w -> (((w `leu16` (r * l16)) >> 15) * l16) >> 48)
                         w64s
                     )
-                *   l16
-                )
-            >>  48
-            ) - 1
+                ) - 1
 
         i = intermediateBlockIndex << 9
 
@@ -658,6 +679,13 @@ prepare v = BitVector
         ( oneIndices 0 (Unboxed.length v)
           v ))))
 
+    {-@
+    oneIndices
+        :: Int
+        -> Int
+        -> Unboxed.Vector Word64
+        -> Unboxed.Vector { v : Int | 0 <= v }
+    @-}
     oneIndices :: Int -> Int -> Unboxed.Vector Word64 -> Unboxed.Vector Int
     oneIndices i1 i2 vector =
           Unboxed.map (\(i, _) -> i)
@@ -758,7 +786,9 @@ instance SuccinctBitVector BitVector where
         let i               = getCount r `quot` 512
             p               = Unboxed.unsafeIndex primary_ (fromIntegral i)
             q               = Unboxed.unsafeIndex primary_ (fromIntegral i + 1)
-            basicBlockBegin = p `quot` 512
+            -- TODO: Use `quot` instead when this pull request is merged:
+            -- https://github.com/ucsd-progsys/liquidhaskell/pull/533
+            (basicBlockBegin, _) = p `quotRem` 512
             basicBlockEnd   = q `quot` 512
             p1              = Position (basicBlockBegin * 512)
             c1              = r - Count (Unboxed.unsafeIndex rank9_ (basicBlockBegin * 2))
@@ -797,16 +827,21 @@ instance SuccinctBitVector BitVector where
                 | numBasicBlocks < 128 ->
                     let (vectorIndex, w16Index) = getPosition p1 `quotRem` 4
                         w64 = Unboxed.unsafeIndex secondary_ (secondaryBegin + vectorIndex)
-                        p2  = Position (fromIntegral ((w64 >> (w16Index << 4)) .&. 0xFFFF))
+                        p2  = Position (natFromWord64 ((w64 >> (w16Index << 4)) .&. 0xFFFF))
                     in  (p1 + p2, 1)
                 | numBasicBlocks < 256 ->
                     let (vectorIndex, w32Index) = getPosition p1 `quotRem` 2
                         w64 = Unboxed.unsafeIndex secondary_ (secondaryBegin + vectorIndex)
-                        p2  = Position (fromIntegral ((w64 >> (w32Index << 5)) .&. 0xFFFFFFFF))
+                        p2  = Position (natFromWord64 ((w64 >> (w32Index << 5)) .&. 0xFFFFFFFF))
                     in  (p1 + p2, 1)
                 | otherwise ->
-                    let p2 = Position (fromIntegral (Unboxed.unsafeIndex secondary_ (getPosition p1)))
+                    let p2 = Position (natFromWord64 (Unboxed.unsafeIndex secondary_ (getPosition p1)))
                     in  (p2, 1)
 
     size bv = Position (Unboxed.length (bits bv) * 64)
     {-# INLINE size #-}
+
+{-@
+assume Unboxed.imap
+    :: ({ v : Int | 0 <= v } -> a -> b) -> Unboxed.Vector a -> Unboxed.Vector b
+@-}
