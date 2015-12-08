@@ -679,13 +679,6 @@ prepare v = BitVector
         ( oneIndices 0 (Unboxed.length v)
           v ))))
 
-    {-@
-    oneIndices
-        :: Int
-        -> Int
-        -> Unboxed.Vector Word64
-        -> Unboxed.Vector { v : Int | 0 <= v }
-    @-}
     oneIndices :: Int -> Int -> Unboxed.Vector Word64 -> Unboxed.Vector Int
     oneIndices i1 i2 vector =
           Unboxed.map (\(i, _) -> i)
