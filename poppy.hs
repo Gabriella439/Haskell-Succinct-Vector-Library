@@ -9,20 +9,24 @@
 import Control.Monad (when)
 import Control.Monad.Primitive (PrimMonad, PrimState)
 import Control.Monad.ST (ST)
-import Data.Bits ((.&.), (.|.))
-import Data.Word (Word64)
+import Data.Bits ((.&.), (.|.), complement, xor)
+import Data.Word (Word8, Word64)
 import Data.Primitive.Types (Prim(..))
 import Prelude hiding ((>>))
 
 import qualified Control.Monad.ST              as ST
 import qualified Data.Bits                     as Bits
+import qualified Data.Vector.Generic           as Generic
 import qualified Data.Vector.Primitive         as Primitive
 import qualified Data.Vector.Primitive.Mutable as Mutable
+
+-- TODO: Use `Mutable.unsafeWrite` instead of `Mutable.write`
+-- TODO: Compress the bit vector?
 
 {-@ measure vlen :: Primitive.Vector a -> Int @-}
 
 {-@
-assume Primitive.length
+Primitive.length
     :: Prim a => v : Primitive.Vector a -> { n : Int | 0 <= n && n = vlen v }
 @-}
 
@@ -32,11 +36,20 @@ Primitive.unsafeIndex
     => v : Primitive.Vector a -> { n : Int | 0 <= n && n < vlen v } -> a
 @-}
 
+{-@
+Primitive.unsafeSlice
+    :: Prim a
+    => n : { n : Int | 0 <= n }
+    -> l : { l : Int | 0 <= l }
+    -> i : { i : Primitive.Vector a | n + l <= vlen i }
+    -> { o : Primitive.Vector a | vlen o = l }
+@-}
+
 {-@ measure mlen :: Primitive.MVector (PrimState m) a -> Int @-}
 
 -- TODO: Use unsafe writes once we can satisfy the Liquid Haskell type-checker
 {-@
-assume Mutable.unsafeWrite
+Mutable.unsafeWrite
     :: (PrimMonad m, Prim a)
     => v : Mutable.MVector (PrimState m) a
     -> { n : Int | 0 <= n && n < mlen v }
@@ -45,7 +58,7 @@ assume Mutable.unsafeWrite
 @-}
 
 {-@
-assume Mutable.new
+Mutable.new
     :: (PrimMonad m, Prim a)
     => n : Int -> m ({ v : Mutable.MVector (PrimState m) a | mlen v == n })
 @-}
@@ -71,15 +84,15 @@ l1 w64 = w64 .&. 0x00000000FFFFFFFF
 
 {- l2_0 :: Word64 -> { v : Word64 | v < 1024 } -}
 l2_0 :: Word64 -> Word64
-l2_0 w64 = w64 .&. 0x000003FF00000000 >> 32
+l2_0 w64 = (w64 .&. 0x000003FF00000000) >> 32
 
 {- l2_1 :: Word64 -> { v : Word64 | v < 1024 } -}
 l2_1 :: Word64 -> Word64
-l2_1 w64 = w64 .&. 0x000FFC0000000000 >> 42
+l2_1 w64 = (w64 .&. 0x000FFC0000000000) >> 42
 
 {- l2_2 :: Word64 -> { v : Word64 | v < 1024 } -}
 l2_2 :: Word64 -> Word64
-l2_2 w64 = w64 .&. 0x3FF0000000000000 >> 52
+l2_2 w64 = (w64 .&. 0x3FF0000000000000) >> 52
 
 {-@
 l1l2
@@ -96,18 +109,96 @@ l1l2 l1_ l2_0_ l2_1_ l2_2_ =
     .|. l2_1_ << 42
     .|. l2_2_ << 52
 
+l8 :: Word64
+l8 = 0x0101010101010101
+{-# INLINE l8 #-}
+
+h8 :: Word64
+h8 = ox8080808080808080
+  where
+    -- Liquid Haskell chokes on numeric literals greater than or equal to
+    -- 0x4000000000000000
+    --
+    -- See: https://github.com/ucsd-progsys/liquid-fixpoint/issues/162
+    ox8080808080808080 = 0x2020202020202020
+                       + 0x2020202020202020
+                       + 0x2020202020202020
+                       + 0x2020202020202020
+{-# INLINE h8 #-}
+
+lt8 :: Word64 -> Word64 -> Word64
+x `lt8` y
+    = (((x .|. h8) - (y .&. complement h8)) `xor` x `xor` complement y) .&. h8
+{-# INLINE lt8 #-}
+
+le8 :: Word64 -> Word64 -> Word64
+x `le8` y
+    = (((y .|. h8) - (x .&. complement h8)) `xor` x `xor` y) .&. h8
+{-# INLINE le8 #-}
+
+-- `Word64`s always map onto a non-negative integer, but we have to inform
+-- Liquid Haskell of that fact
+{-@
+assume natFromWord64 :: Word64 -> { v : Int | 0 <= v }
+@-}
+natFromWord64 :: Word64 -> Int
+natFromWord64 = fromIntegral
+{-# INLINE natFromWord64 #-}
+
+selectWord64 :: Word64 -> Word64 -> Int
+selectWord64 x r = natFromWord64 (b + ((((s3 `le8` (l * l8)) >> 7) * l8) >> 56))
+  where
+    s0 = x - ((x .&. oxAAAAAAAAAAAAAAAA) >> 1)
+    s1 = (s0 .&. 0x3333333333333333) + ((s0 >> 2) .&. 0x3333333333333333)
+    s2 = ((s1 + (s1 >> 4)) .&. 0x0F0F0F0F0F0F0F0F) * l8
+    b  = ((((s2 `le8` (r * l8)) >> 7) * l8) >> 53) .&. complement 0x7
+    {-@ assume b' :: { b : Int | 0 <= b && b < 8 } @-}
+    b' = fromIntegral b
+    l  = r - (((s2 << 8) >> b') .&. 0xFF)
+    s3 = ((0x0 `lt8` (((x >> b' .&. 0xFF) * l8) .&. ox8040201008040201)) >> 0x7) * l8
+    -- Liquid Haskell chokes on numeric literals greater than or equal to
+    -- 0x4000000000000000
+    --
+    -- See: https://github.com/ucsd-progsys/liquid-fixpoint/issues/162
+    oxAAAAAAAAAAAAAAAA = 0x2222222222222222
+                       + 0x3333333333333333
+                       + 0x2222222222222222
+                       + 0x3333333333333333
+    ox8040201008040201 = 0x2010080402010081
+                       + 0x2010080402010080
+                       + 0x2010080402010080
+                       + 0x2010080402010080
+{-  IMPLEMENTATION NOTES:
+
+    This is "Algorithm 2" from this paper:
+
+> Vigna, Sebastiano. "Broadword implementation of rank/select queries." Experimental Algorithms. Springer Berlin Heidelberg, 2008. 154-168.
+
+    There was a typo in the original paper.  Line 1 of the original
+    "Algorithm 2" has:
+
+> 1  s = (s & 0x3333333333333333) + ((x >> 2) & 0x3333333333333333)
+
+    ... but should have instead been:
+
+> 1  s = (s & 0x3333333333333333) + ((s >> 2) & 0x3333333333333333)
+-}
+{-# INLINE selectWord64 #-}
+
 {-@
 data SuccinctBitVector = SuccinctBitVector
-    { vector :: Primitive.Vector Word64
-    , l0s    :: { l0s : Primitive.Vector Word64 | vlen l0s = (vlen vector / 67108864) + 1 }
-    , l1l2s  :: { l1l2s : Primitive.Vector Word64 | vlen l1l2s = (vlen vector / 32) + 1 }
+    { vector   :: Primitive.Vector Word64
+    , l0s      :: { l0s   : Primitive.Vector Word64 | vlen l0s      = (vlen vector / 67108864) + 1 }
+    , l1l2s    :: { l1l2s : Primitive.Vector Word64 | vlen l1l2s    = (vlen vector / 32      ) + 1 }
+    , sample1s :: Primitive.Vector Int
     }
 @-}
 
 data SuccinctBitVector = SuccinctBitVector
-    { vector :: {-# UNPACK #-} !(Primitive.Vector Word64)
-    , l0s    :: {-# UNPACK #-} !(Primitive.Vector Word64)
-    , l1l2s  :: {-# UNPACK #-} !(Primitive.Vector Word64)
+    { vector   :: {-# UNPACK #-} !(Primitive.Vector Word64)
+    , l0s      :: {-# UNPACK #-} !(Primitive.Vector Word64)
+    , l1l2s    :: {-# UNPACK #-} !(Primitive.Vector Word64)
+    , sample1s :: {-# UNPACK #-} !(Primitive.Vector Int)
     } deriving (Show)
 
 size :: SuccinctBitVector -> Int
@@ -123,9 +214,9 @@ prepare vector = ST.runST (do
             then popCount (Primitive.unsafeIndex vector j)
             else 0
 
-    -- TODO: Prove that `loop` terminates
-    let {-@ Lazy loop @-}
-        loop !i0 !previousCount !currentCount
+    -- TODO: Prove that `loop0` terminates
+    let {-@ Lazy loop0 @-}
+        loop0 !i0 !previousCount !currentCount
             | i0 <= Primitive.length vector = do
                 let (p0, q0) = quotRem i0 67108864
                 previousCount' <-
@@ -135,8 +226,7 @@ prepare vector = ST.runST (do
                         return currentCount
                     else return previousCount
 
-                let {-@
-                    assume l1_ :: { l1 : Word64 | 0 <= l1 && l1 < 4294967296 }
+                let {-@ assume l1_ :: { l1 : Word64 | 0 <= l1 && l1 < 4294967296 }
                     @-}
                     l1_ = currentCount - previousCount'
 
@@ -173,9 +263,9 @@ prepare vector = ST.runST (do
                 Mutable.write l1l2sMutable p1 l1l2_
 
                 let currentCount' = currentCount + l2_0_ + l2_1_ + l2_2_ + l2_3_
-                loop i4 previousCount' currentCount'
-            | otherwise = return ()
-    loop 0 0 0
+                loop0 i4 previousCount' currentCount'
+            | otherwise = return currentCount
+    numberOfOnes <- loop0 0 0 0
 
     {-@
     assume freezel0s
@@ -197,6 +287,30 @@ prepare vector = ST.runST (do
             _ = _vector :: Primitive.Vector Word64
     l1l2s <- freezel1l2s vector
 
+    sample1sMutable <- Mutable.new (quot (fromIntegral (numberOfOnes + 8191)) 8192 + 1)
+    let {-@ Lazy loop1 @-}
+        loop1 !numOnes !vectorIndex !sampleIndex
+            | vectorIndex < Primitive.length vector = do
+                let w64 = Primitive.unsafeIndex vector vectorIndex
+                let numOnes' = numOnes + popCount w64
+                (numOnes'', sampleIndex') <-
+                    if numOnes' < 8192
+                    then return (numOnes', sampleIndex)
+                    else do
+                        let needed   = 8192 - numOnes
+                        let bitIndex = selectWord64 w64 (needed - 1)
+                        Mutable.write sample1sMutable
+                            sampleIndex
+                            (vectorIndex * 64 + bitIndex)
+                        return (numOnes' - 8192, sampleIndex + 1)
+                loop1 numOnes'' (vectorIndex + 1) sampleIndex'
+            | otherwise =
+                Mutable.write sample1sMutable sampleIndex
+                    (Primitive.length vector * 64)
+    loop1 8191 0 0
+
+    sample1s <- Primitive.freeze sample1sMutable
+
     return (SuccinctBitVector {..}) )
 
 main :: IO ()
@@ -209,8 +323,67 @@ unsafeRank
     -> Word64
 @-}
 unsafeRank :: SuccinctBitVector -> Int -> Word64
-unsafeRank sbv@(SuccinctBitVector {..}) bit = c0
+unsafeRank sbv@(SuccinctBitVector {..}) p0 = c0 + c1 + c2 + c3
   where
-    -- TODO: Use `quot` when Liquid Haskell Prelude is fixed
-    c0   = Primitive.unsafeIndex l0s   (div bit 4294967296)
-    l1l2 = Primitive.unsafeIndex l1l2s (div bit 2048      )
+    -- TODO: Use `quotRem` when Liquid Haskell Prelude is fixed
+    p1   = p0 `div` 4294967296
+
+    p2   = p0 `div` 2048
+    q2   = p0 `mod` 2048
+
+    p3   = q2 `div` 512
+    q3   = q2 `mod` 512
+
+    p4   = q3 `div` 64
+
+    c0   = Primitive.unsafeIndex l0s   p1
+
+    l1l2 = Primitive.unsafeIndex l1l2s p2
+
+    c1   = l1 l1l2
+
+    c2   = case p3 of
+        0 -> 0
+        1 -> l2_0 l1l2
+        2 -> l2_0 l1l2 + l2_1 l1l2
+        _ -> l2_0 l1l2 + l2_1 l1l2 + l2_2 l1l2
+
+    c3 =
+        Primitive.sum
+            (Primitive.map popCount
+                (Primitive.unsafeSlice (((p0 - q2) + p3 * 512) `div` 64) p4
+                    vector ) )
+
+{-@
+search
+    :: (Prim e, Ord a)
+    => x  : a
+    -> f  : (e -> a)
+    -> v  : Primitive.Vector e
+    -> lo : { lo : Int | 0  <= lo && lo < vlen v }
+    -> hi : { hi : Int | lo <= hi && hi < vlen v }
+    ->      e
+    / [hi - lo]
+@-}
+search
+    :: (Ord a, Prim e) => a -> (e -> a) -> Primitive.Vector e -> Int -> Int -> e
+search x f v lo hi = do
+    let mid = lo + (hi - lo) `div` 2
+    if hi <= lo
+    then Primitive.unsafeIndex v lo
+    else do
+        let x' = f (Primitive.unsafeIndex v mid)
+        if x <= x'
+        then search x f v lo        mid
+        else search x f v (mid + 1) hi
+
+{-
+unsafeSelect :: SuccinctBitVector -> Word64 -> Int
+unsafeSelect (SuccinctBitVector {..}) y =
+  where
+    pMin  = Primitive.unsafeIndex sample1s ((y `div` 8192) * 8192    )
+    pMax  = Primitive.unsafeIndex sample1s ((y `div` 8192) * 8192 + 1)
+    l1Lo  = Primitive.unsafeIndex l1l2s    (pMin `div` 2048)
+    l1Hi  = Primitive.unsafeIndex l1l2s    (pMax `div` 2048)
+    l1l2  = search
+-}
