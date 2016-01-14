@@ -10,57 +10,125 @@ import Control.Monad (when)
 import Control.Monad.Primitive (PrimMonad, PrimState)
 import Control.Monad.ST (ST)
 import Data.Bits ((.&.), (.|.), complement, xor)
-import Data.Word (Word8, Word64)
+import Data.Word (Word8, Word32, Word64)
 import Data.Primitive.Types (Prim(..))
+import Data.Vector (Vector)
+import Data.Vector.Mutable (MVector)
 import Prelude hiding ((>>))
 
 import qualified Control.Monad.ST              as ST
 import qualified Data.Bits                     as Bits
+import qualified Data.Vector                   as Vector
 import qualified Data.Vector.Generic           as Generic
+import qualified Data.Vector.Mutable
+import qualified Data.Vector.Mutable           as Vector
+import qualified Data.Vector.Primitive
 import qualified Data.Vector.Primitive         as Primitive
-import qualified Data.Vector.Primitive.Mutable as Mutable
+import qualified Data.Vector.Primitive.Mutable
+import qualified Data.Vector.Primitive.Mutable as Primitive
 
--- TODO: Use `Mutable.unsafeWrite` instead of `Mutable.write`
+-- TODO: Use `Primitive.unsafeWrite` instead of `Primitive.write`
 -- TODO: Compress the bit vector?
+-- TODO: Test with LLVM backend
 
-{-@ measure vlen :: Primitive.Vector a -> Int @-}
+{-@ measure plen :: Primitive.Vector a -> Int @-}
 
 {-@
-Primitive.length
-    :: Prim a => v : Primitive.Vector a -> { n : Int | 0 <= n && n = vlen v }
+assume Data.Vector.Primitive.length
+    :: Prim a => v : Primitive.Vector a -> { n : Int | 0 <= n && n = plen v }
 @-}
 
 {-@
 Primitive.unsafeIndex
     :: Prim a
-    => v : Primitive.Vector a -> { n : Int | 0 <= n && n < vlen v } -> a
+    => v : Primitive.Vector a
+    -> { n : Int | 0 <= n && n < plen v }
+    -> a
 @-}
 
 {-@
-Primitive.unsafeSlice
+assume Primitive.unsafeSlice
     :: Prim a
     => n : { n : Int | 0 <= n }
     -> l : { l : Int | 0 <= l }
-    -> i : { i : Primitive.Vector a | n + l <= vlen i }
-    -> { o : Primitive.Vector a | vlen o = l }
+    -> i : { i : Primitive.Vector a | n + l <= plen i }
+    -> { o : Primitive.Vector a | plen o = l }
 @-}
 
-{-@ measure mlen :: Primitive.MVector (PrimState m) a -> Int @-}
+{-@ measure pmlen :: Primitive.MVector s a -> Int @-}
 
--- TODO: Use unsafe writes once we can satisfy the Liquid Haskell type-checker
 {-@
-Mutable.unsafeWrite
+assume Primitive.unsafeWrite
     :: (PrimMonad m, Prim a)
-    => v : Mutable.MVector (PrimState m) a
+    => v : Primitive.MVector (PrimState m) a
+    -> { n : Int | 0 <= n && n < pmlen v }
+    -> a
+    -> m ()
+@-}
+
+{-@
+assume primitiveNewST
+    :: Prim a
+    => n : Int -> ST s ({ v : Primitive.MVector s a | pmlen v == n })
+@-}
+primitiveNewST :: Prim a => Int -> ST s (Primitive.MVector s a)
+primitiveNewST = Primitive.new
+{-# INLINE primitiveNewST #-}
+
+{-@
+assume primitiveFreezeST
+    :: mv : Primitive.MVector s a
+    -> ST s ({ v : Primitive.Vector a | plen v == pmlen mv })
+@-}
+primitiveFreezeST
+    :: Prim a => Primitive.MVector s a -> ST s (Primitive.Vector a)
+primitiveFreezeST = Primitive.freeze
+{-# INLINE primitiveFreezeST #-}
+
+{-@ measure mlen :: MVector (PrimState m) a -> Int @-}
+
+{-@
+assume mutableReplicateMST
+    :: n : { n : Int | 0 <= n }
+    -> ST s a
+    -> ST s ({ v : MVector s a | mlen v == n })
+@-}
+mutableReplicateMST :: Int -> ST s a -> ST s (MVector s a)
+mutableReplicateMST = Data.Vector.Mutable.replicateM
+{-# INLINE mutableReplicateMST #-}
+
+{-@
+assume Vector.unsafeRead
+    :: PrimMonad m
+    => v : MVector (PrimState m) a
+    -> { n : Int | 0 <= n && n < mlen v }
+    -> m a
+@-}
+
+{-@
+assume Vector.unsafeWrite
+    :: PrimMonad m
+    => v : MVector (PrimState m) a
     -> { n : Int | 0 <= n && n < mlen v }
     -> a
     -> m ()
 @-}
 
 {-@
-Mutable.new
-    :: (PrimMonad m, Prim a)
-    => n : Int -> m ({ v : Mutable.MVector (PrimState m) a | mlen v == n })
+assume freezeST
+    :: mv : MVector s a
+    -> ST s ({ v : Vector a | vlen v == mlen mv })
+@-}
+freezeST :: MVector s a -> ST s (Vector a)
+freezeST = Vector.freeze
+{-# INLINE freezeST #-}
+
+{-@
+assume Vector.mapM
+    :: Monad m
+    => (a -> m b)
+    -> i : Vector a
+    -> m ({ o : Vector b | vlen o == vlen i })
 @-}
 
 {-@ (>>) :: Word64 -> { n : Int | 0 <= n && n < 64 } -> Word64 @-}
@@ -145,6 +213,12 @@ natFromWord64 :: Word64 -> Int
 natFromWord64 = fromIntegral
 {-# INLINE natFromWord64 #-}
 
+{-@
+selectWord64
+    :: Word64
+    -> { r : Word64 | 0 <= r && r < 64 }
+    -> Int
+@-}
 selectWord64 :: Word64 -> Word64 -> Int
 selectWord64 x r = natFromWord64 (b + ((((s3 `le8` (l * l8)) >> 7) * l8) >> 56))
   where
@@ -187,10 +261,11 @@ selectWord64 x r = natFromWord64 (b + ((((s3 `le8` (l * l8)) >> 7) * l8) >> 56))
 
 {-@
 data SuccinctBitVector = SuccinctBitVector
-    { vector   :: Primitive.Vector Word64
-    , l0s      :: { l0s   : Primitive.Vector Word64 | vlen l0s      = (vlen vector / 67108864) + 1 }
-    , l1l2s    :: { l1l2s : Primitive.Vector Word64 | vlen l1l2s    = (vlen vector / 32      ) + 1 }
-    , sample1s :: Primitive.Vector Int
+    { vector   :: { vector   : Primitive.Vector Word64 | 0 <= plen vector }
+    , l0s      :: { l0s      : Primitive.Vector Word64 | plen l0s      = (plen vector / 67108864) + 1 }
+    , l1l2s    :: { l1l2s    : Primitive.Vector Word64 | plen l1l2s    = (plen vector / 32      ) + 1 }
+    , sample1s :: { sample1s : Vector (Primitive.Vector Word32) | vlen sample1s = plen l0s }
+    , numOnes  :: Word64
     }
 @-}
 
@@ -198,31 +273,60 @@ data SuccinctBitVector = SuccinctBitVector
     { vector   :: {-# UNPACK #-} !(Primitive.Vector Word64)
     , l0s      :: {-# UNPACK #-} !(Primitive.Vector Word64)
     , l1l2s    :: {-# UNPACK #-} !(Primitive.Vector Word64)
-    , sample1s :: {-# UNPACK #-} !(Primitive.Vector Int)
+    , sample1s :: {-# UNPACK #-} !(Vector (Primitive.Vector Word32))
+    , numOnes  :: {-# UNPACK #-} !Word64
     } deriving (Show)
 
 size :: SuccinctBitVector -> Int
-size sbv = Primitive.length (vector sbv) * 64
+size sbv = Data.Vector.Primitive.length (vector sbv) * 64
+
+-- TODO: Move this to a separate module
+data Samples s = Samples
+    { samples  :: {-# UNPACK #-} !(Primitive.MVector s Word32)
+    , numElems :: {-# UNPACK #-} !Int
+    , capacity :: {-# UNPACK #-} !Int
+    }
+
+newSamples :: ST s (Samples s)
+newSamples = do
+    mv <- primitiveNewST 1
+    return (Samples mv 0 1)
+
+appendSample :: Word32 -> Samples s -> ST s (Samples s)
+appendSample w32 s@(Samples {..}) = do
+    Primitive.write samples numElems w32
+    let numElems' = numElems + 1
+    if numElems' < capacity
+    then return (Samples samples numElems' capacity)
+    else do
+        samples' <- Primitive.grow samples capacity
+        return (Samples samples' capacity (2 * capacity))
+
+freezeSamples :: Samples s -> ST s (Primitive.Vector Word32)
+freezeSamples (Samples {..}) =
+    primitiveFreezeST (Data.Vector.Primitive.Mutable.take numElems samples)
 
 prepare :: Primitive.Vector Word64 -> SuccinctBitVector
 prepare vector = ST.runST (do
-    l0sMutable   <- Mutable.new (quot (Primitive.length vector) 67108864 + 1)
-    l1l2sMutable <- Mutable.new (quot (Primitive.length vector) 32       + 1)
+    l0sMutable   <- do
+        primitiveNewST (Data.Vector.Primitive.length vector `div` 67108864 + 1)
+    l1l2sMutable <- do
+        primitiveNewST (Data.Vector.Primitive.length vector `div` 32       + 1)
 
     let count j =
-            if j < Primitive.length vector
+            if j < Data.Vector.Primitive.length vector
             then popCount (Primitive.unsafeIndex vector j)
             else 0
 
     -- TODO: Prove that `loop0` terminates
     let {-@ Lazy loop0 @-}
         loop0 !i0 !previousCount !currentCount
-            | i0 <= Primitive.length vector = do
+            | i0 <= Data.Vector.Primitive.length vector = do
                 let (p0, q0) = quotRem i0 67108864
-                previousCount' <-
+                previousCount' <- do
                     if (q0 == 0)
                     then do
-                        Mutable.write l0sMutable p0 currentCount
+                        Primitive.write l0sMutable p0 currentCount
                         return currentCount
                     else return previousCount
 
@@ -260,56 +364,48 @@ prepare vector = ST.runST (do
 
                 let l1l2_ = l1l2 l1_ l2_0_ l2_1_ l2_2_
                 let (p1, _) = quotRem i0 32
-                Mutable.write l1l2sMutable p1 l1l2_
+                Primitive.write l1l2sMutable p1 l1l2_
 
                 let currentCount' = currentCount + l2_0_ + l2_1_ + l2_2_ + l2_3_
                 loop0 i4 previousCount' currentCount'
             | otherwise = return currentCount
-    numberOfOnes <- loop0 0 0 0
+    numOnes <- loop0 0 0 0
 
-    {-@
-    assume freezel0s
-        :: vector : Primitive.Vector Word64
-        -> ST s ({ l0s : Primitive.Vector Word64 | vlen l0s = (vlen vector / 67108864) + 1 })
-    @-}
-    let freezel0s _vector = Primitive.freeze l0sMutable
-          where
-            _ = _vector :: Primitive.Vector Word64
-    l0s <- freezel0s vector
+    l0s   <- primitiveFreezeST l0sMutable
+    l1l2s <- primitiveFreezeST l1l2sMutable
 
-    {-@
-    assume freezel1l2s
-        :: vector : Primitive.Vector Word64
-        -> ST s ({ l1l2s : Primitive.Vector Word64 | vlen l1l2s = (vlen vector / 32) + 1 })
-    @-}
-    let freezel1l2s _vector = Primitive.freeze l1l2sMutable
-          where
-            _ = _vector :: Primitive.Vector Word64
-    l1l2s <- freezel1l2s vector
+    sample1sMutable <- do
+        mutableReplicateMST (Data.Vector.Primitive.length l0s) newSamples
 
-    sample1sMutable <- Mutable.new (quot (fromIntegral (numberOfOnes + 8191)) 8192 + 1)
     let {-@ Lazy loop1 @-}
-        loop1 !numOnes !vectorIndex !sampleIndex
-            | vectorIndex < Primitive.length vector = do
-                let w64 = Primitive.unsafeIndex vector vectorIndex
-                let numOnes' = numOnes + popCount w64
-                (numOnes'', sampleIndex') <-
-                    if numOnes' < 8192
-                    then return (numOnes', sampleIndex)
-                    else do
-                        let needed   = 8192 - numOnes
-                        let bitIndex = selectWord64 w64 (needed - 1)
-                        Mutable.write sample1sMutable
-                            sampleIndex
-                            (vectorIndex * 64 + bitIndex)
-                        return (numOnes' - 8192, sampleIndex + 1)
-                loop1 numOnes'' (vectorIndex + 1) sampleIndex'
-            | otherwise =
-                Mutable.write sample1sMutable sampleIndex
-                    (Primitive.length vector * 64)
-    loop1 8191 0 0
+        loop1 !numOnes !vectorIndex
+            | vectorIndex < Data.Vector.Primitive.length vector = do
+                let samplesIndex = vectorIndex `div` 67108864 
+                let w64          = Primitive.unsafeIndex vector vectorIndex
+                let selectIndex  = (- numOnes) `mod` 8192
+                let newOnes      = popCount w64
 
-    sample1s <- Primitive.freeze sample1sMutable
+                if selectIndex < newOnes
+                then do
+                    let bitIndex = selectWord64 w64 selectIndex
+                    samples <- Vector.read sample1sMutable samplesIndex
+                    let i = vectorIndex * 64 + bitIndex
+                          - samplesIndex * 4294967296
+                    samples' <- appendSample (fromIntegral i) samples
+                    Vector.write sample1sMutable samplesIndex samples'
+                else return ()
+
+                let numOnes' =
+                        if vectorIndex `mod` 67108864 == 67108863
+                        then -1
+                        else numOnes + newOnes
+
+                loop1 numOnes' (vectorIndex + 1)
+            | otherwise = return ()
+    loop1 0 0
+
+    sample1s_ <- freezeST sample1sMutable
+    sample1s  <- Vector.mapM freezeSamples sample1s_
 
     return (SuccinctBitVector {..}) )
 
@@ -319,7 +415,7 @@ main = prepare (Primitive.enumFromN 0 10000000) `seq` return ()
 {-@
 unsafeRank
     :: sbv : SuccinctBitVector
-    -> { bit : Int | 0 <= bit && bit <= vlen (vector sbv) * 64 }
+    -> { bit : Int | 0 <= bit && bit <= plen (vector sbv) * 64 }
     -> Word64
 @-}
 unsafeRank :: SuccinctBitVector -> Int -> Word64
@@ -351,7 +447,9 @@ unsafeRank sbv@(SuccinctBitVector {..}) p0 = c0 + c1 + c2 + c3
     c3 =
         Primitive.sum
             (Primitive.map popCount
-                (Primitive.unsafeSlice (((p0 - q2) + p3 * 512) `div` 64) p4
+                (Data.Vector.Primitive.unsafeSlice
+                    (((p0 - q2) + p3 * 512) `div` 64)
+                    p4
                     vector ) )
 
 {-@
@@ -360,30 +458,41 @@ search
     => x  : a
     -> f  : (e -> a)
     -> v  : Primitive.Vector e
-    -> lo : { lo : Int | 0  <= lo && lo < vlen v }
-    -> hi : { hi : Int | lo <= hi && hi < vlen v }
-    ->      e
+    -> lo : { lo : Int | 0  <= lo && lo <  plen v }
+    -> hi : { hi : Int | lo <  hi && hi <= plen v }
+    -> Int
     / [hi - lo]
 @-}
 search
-    :: (Ord a, Prim e) => a -> (e -> a) -> Primitive.Vector e -> Int -> Int -> e
+    :: (Ord a, Prim e)
+    => a -> (e -> a) -> Primitive.Vector e -> Int -> Int -> Int
 search x f v lo hi = do
     let mid = lo + (hi - lo) `div` 2
-    if hi <= lo
-    then Primitive.unsafeIndex v lo
+    if hi == lo + 1
+    then lo
     else do
         let x' = f (Primitive.unsafeIndex v mid)
-        if x <= x'
-        then search x f v lo        mid
-        else search x f v (mid + 1) hi
+        if x < x'
+        then search x f v lo  mid
+        else search x f v mid hi
 
+-- unsafeSelect :: SuccinctBitVector -> Word64 -> Int
 {-
-unsafeSelect :: SuccinctBitVector -> Word64 -> Int
-unsafeSelect (SuccinctBitVector {..}) y =
+unsafeSelect (SuccinctBitVector {..}) y0 = (pMin, pMax)
   where
-    pMin  = Primitive.unsafeIndex sample1s ((y `div` 8192) * 8192    )
-    pMax  = Primitive.unsafeIndex sample1s ((y `div` 8192) * 8192 + 1)
-    l1Lo  = Primitive.unsafeIndex l1l2s    (pMin `div` 2048)
-    l1Hi  = Primitive.unsafeIndex l1l2s    (pMax `div` 2048)
-    l1l2  = search
+    l0Index = search y0 id l0s 0 (Data.Vector.Primitive.length l0s)
+    l0      = Primitive.unsafeIndex l0s l0Index
+    y1      = y0 - l0
+    pMin    =
+        Primitive.unsafeIndex
+            (Vector.unsafeIndex sample1s l0Index)
+            (fromIntegral ((y1 `div` 8192) * 8192    ))
+    pMax    =
+        Primitive.unsafeIndex
+            (Vector.unsafeIndex sample1s l0Index)
+            (fromIntegral ((y1 `div` 8192) * 8192 + 1))
+    pMax = Primitive.unsafeIndex sample1s (fromIntegral ((y1 `div` 8192) * 8192 + 1))
+    l1Lo = Primitive.unsafeIndex l1l2s    (pMin `div` 2048)
+    l1Hi = Primitive.unsafeIndex l1l2s    (pMax `div` 2048)
+    l1l2 = search 
 -}
