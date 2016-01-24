@@ -37,6 +37,13 @@ assume Data.Vector.Primitive.unsafeSlice
 {-@ measure pmlen :: Data.Vector.Primitive.Mutable.MVector s a -> Int @-}
 
 {-@
+assume Data.Vector.Primitive.Mutable.length
+    :: Prim a
+    => v : Data.Vector.Primitive.Mutable.MVector s a
+    -> { n : Int | 0 <= n && n == pmlen v }
+@-}
+
+{-@
 assume Data.Vector.Primitive.Mutable.unsafeWrite
     :: (PrimMonad m, Prim a)
     => v : Data.Vector.Primitive.Mutable.MVector (PrimState m) a
@@ -73,6 +80,12 @@ primitiveFreezeST
 primitiveFreezeST = Data.Vector.Primitive.freeze
 {-# INLINE primitiveFreezeST #-}
 
+{-| Finds the last element in the vector that is less than or equal to `x`
+    when transformed using function `f`
+
+    TODO: This assumes that there is at least one element in the vector less
+    than or equal to `x`
+-}
 {-@
 search
     :: (Prim e, Ord a)
@@ -81,17 +94,17 @@ search
     -> v  : Data.Vector.Primitive.Vector e
     -> lo : { lo : Int | 0  <= lo && lo <  plen v }
     -> hi : { hi : Int | lo <  hi && hi <= plen v }
-    ->      Int
-    / [hi - lo]
+    ->      { r  : Int | 0  <= r  && r  <  plen v }
+    /  [hi - lo]
 @-}
 search
     :: (Ord a, Prim e)
     => a -> (e -> a) -> Data.Vector.Primitive.Vector e -> Int -> Int -> Int
 search x f v lo hi = do
-    let mid = lo + (hi - lo) `div` 2
-    if hi == lo + 1
+    if lo + 1 == hi
     then lo
     else do
+        let mid = lo + (hi - lo) `div` 2
         let x' = f (Data.Vector.Primitive.unsafeIndex v mid)
         if x < x'
         then search x f v lo  mid
