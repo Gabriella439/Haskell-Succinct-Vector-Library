@@ -280,7 +280,7 @@ prepare vector = ST.runST (do
                 previousCount' <- do
                     if (q0 == 0)
                     then do
-                        Data.Vector.Primitive.Mutable.write l0sMutable p0
+                        Data.Vector.Primitive.Mutable.unsafeWrite l0sMutable p0
                             currentCount
                         return currentCount
                     else return previousCount
@@ -318,12 +318,13 @@ prepare vector = ST.runST (do
                 let l2_3_ = basicBlockCount i3
 
                 let l1l2_ = l1l2 l1_ l2_0_ l2_1_ l2_2_
-                let (p1, _) = quotRem i0 32
-                Data.Vector.Primitive.Mutable.write l1l2sMutable p1 l1l2_
+                let p1 = i0 `div` 32
+                Data.Vector.Primitive.Mutable.unsafeWrite l1l2sMutable p1 l1l2_
 
                 let currentCount' = currentCount + l2_0_ + l2_1_ + l2_2_ + l2_3_
                 loop0 i4 previousCount' currentCount'
-            | otherwise = return currentCount
+            | otherwise = do
+                return currentCount
     numOnes <- loop0 0 0 0
 
     l0s   <- primitiveFreezeST l0sMutable
@@ -354,7 +355,7 @@ prepare vector = ST.runST (do
 
                 let numOnes' =
                         if vectorIndex `mod` 67108864 == 67108863
-                        then -1
+                        then 0
                         else numOnes + newOnes
 
                 loop1 numOnes' (vectorIndex + 1)
