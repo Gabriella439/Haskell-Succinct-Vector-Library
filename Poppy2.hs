@@ -4,6 +4,7 @@
 
 -- module Poppy2 where
 
+import Data.Bits ((.&.))
 import Data.Word (Word32, Word64)
 import Poppy
 
@@ -18,7 +19,7 @@ unsafeRank
     -> Word64
 @-}
 unsafeRank :: SuccinctBitVector -> Int -> Word64
-unsafeRank sbv@(SuccinctBitVector {..}) p0 = c0 + c1 + c2 + c3
+unsafeRank sbv@(SuccinctBitVector {..}) p0 = c0 + c1 + c2 + c3 + c4
   where
     -- TODO: Use `quotRem` when Liquid Haskell Prelude is fixed
     p1   = p0 `div` 4294967296
@@ -28,8 +29,6 @@ unsafeRank sbv@(SuccinctBitVector {..}) p0 = c0 + c1 + c2 + c3
 
     p3   = q2 `div` 512
     q3   = q2 `mod` 512
-
-    p4   = q3 `div` 64
 
     c0   = Data.Vector.Primitive.unsafeIndex l0s   p1
 
@@ -48,8 +47,15 @@ unsafeRank sbv@(SuccinctBitVector {..}) p0 = c0 + c1 + c2 + c3
             (Data.Vector.Primitive.map popCount
                 (Data.Vector.Primitive.unsafeSlice
                     (((p0 - q2) + p3 * 512) `div` 64)
-                    p4
+                    (q3 `div` 64)
                     vector ) )
+
+    c4   =
+        popCount (Data.Vector.Primitive.unsafeIndex vector p .&. mask)
+      where
+        p = p0 `div` 64
+        q = p0 `mod` 64
+        mask = (1 << q) - 1
 
 main :: IO ()
 main = prepare (Data.Vector.Primitive.enumFromN 0 10000000) `seq` return ()
