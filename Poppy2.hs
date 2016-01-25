@@ -59,6 +59,15 @@ word64ToInt :: Word64 -> Int
 word64ToInt = fromIntegral
 {-# INLINE word64ToInt #-}
 
+{-@ assume word32ToInt :: Word32 -> { n : Int | 0 <= n && n < 4294967296 } @-}
+word32ToInt :: Word32 -> Int
+word32ToInt = fromIntegral
+{-# INLINE word32ToInt #-}
+
+{-@ assume assumeLessThan :: x : Int -> y : Int -> { v : () | x < y } @-}
+assumeLessThan :: Int -> Int -> ()
+assumeLessThan _ _ = ()
+
 {-
 unsafeSelect
     :: sbv : SuccinctBitVector
@@ -77,21 +86,31 @@ unsafeSelect (SuccinctBitVector {..}) y0 =
     l0      = Data.Vector.Primitive.unsafeIndex l0s      l0Index
     samples = Data.Vector.unsafeIndex           sample1s l0Index
 
+    {-@
+    safeSample
+        :: { i : Int | 0 <= i } -> { n : Int | 0 <= n && n <= 4294967296 }
+    @-}
     safeSample :: Int -> Int
     safeSample i =
         if i < Data.Vector.Primitive.length samples
-        then fromIntegral (Data.Vector.Primitive.unsafeIndex samples i)
+        then word32ToInt (Data.Vector.Primitive.unsafeIndex samples i)
         else 4294967296
 
     y1           = y0 - l0
     sampleIndex  = (y1 `div` 8192) * 8192
-    sampleMin    = l0Index + safeSample (word64ToInt  sampleIndex     )
-    sampleMax    = l0Index + safeSample (word64ToInt (sampleIndex + 1))
-    l1l2IndexMin = sampleMin `div` 2048
+    sampleMin    = l0Index * 4294967296 + safeSample (word64ToInt  sampleIndex     )
+    sampleMax    = l0Index * 4294967296 + safeSample (word64ToInt (sampleIndex + 1))
+
+    -- TODO: Prove that `l1l2IndexMin` is in bounds without using `min`
+    l1l2IndexMin =
+        min ( sampleMin      `div` 2048    )
+            (Data.Vector.Primitive.length l1l2s - 1)
     l1l2IndexMax =
         min ((sampleMax - 1) `div` 2048 + 1)
             (Data.Vector.Primitive.length l1l2s)
-    l1l2Index    = Primitives.search y1 l1 l1l2s l1l2IndexMin l1l2IndexMax
+    l1l2Index    =
+        assumeLessThan sampleMin sampleMax `seq`
+        Primitives.search y1 l1 l1l2s l1l2IndexMin l1l2IndexMax
     l1l2         = Data.Vector.Primitive.unsafeIndex l1l2s l1l2Index
     l1_          = l1 l1l2
 
