@@ -2,9 +2,9 @@
 
 {-@ LIQUID "--real" @-}
 
-module Poppy2 where
+-- module Poppy2 where
 
-import Data.Word (Word64)
+import Data.Word (Word32, Word64)
 import Poppy
 
 import qualified Data.Vector
@@ -51,26 +51,117 @@ unsafeRank sbv@(SuccinctBitVector {..}) p0 = c0 + c1 + c2 + c3
                     p4
                     vector ) )
 
--- main :: IO ()
--- main = prepare (Data.Vector.Primitive.enumFromN 0 10000000) `seq` return ()
+main :: IO ()
+main = prepare (Data.Vector.Primitive.enumFromN 0 10000000) `seq` return ()
 
--- unsafeSelect :: SuccinctBitVector -> Word64 -> Int
-unsafeSelect (SuccinctBitVector {..}) y0 = (pMin, pMax)
+{-@ assume word64ToInt :: Word64 -> { n : Int | 0 <= n } @-}
+word64ToInt :: Word64 -> Int
+word64ToInt = fromIntegral
+{-# INLINE word64ToInt #-}
+
+{-
+unsafeSelect
+    :: sbv : SuccinctBitVector
+    -> { y0  : Word64 | 0 <= y0 }
+    -> (Word32, Word32)
+-}
+unsafeSelect :: SuccinctBitVector -> Word64 -> Int
+unsafeSelect (SuccinctBitVector {..}) y0 =
+      l0Index   * 4294967296
+    + l1l2Index * 2048
+    + l2Index   * 512
+    + l3Index   * 64
+    + l4Index
   where
     l0Index = Primitives.search y0 id l0s 0 (Data.Vector.Primitive.length l0s)
-    l0      = Data.Vector.Primitive.unsafeIndex l0s l0Index
-    y1      = y0 - l0
-    pMin    =
-        Data.Vector.Primitive.unsafeIndex
-            (Data.Vector.unsafeIndex sample1s l0Index)
-            (fromIntegral ((y1 `div` 8192) * 8192    ))
-    pMax    =
-        Data.Vector.Primitive.unsafeIndex
-            (Data.Vector.unsafeIndex sample1s l0Index)
-            (fromIntegral ((y1 `div` 8192) * 8192 + 1))
-{-
-    pMax = Data.Vector.Primitive.unsafeIndex sample1s (fromIntegral ((y1 `div` 8192) * 8192 + 1))
-    l1Lo = Data.Vector.Primitive.unsafeIndex l1l2s    (pMin `div` 2048)
-    l1Hi = Data.Vector.Primitive.unsafeIndex l1l2s    (pMax `div` 2048)
-    l1l2 = search 
--}
+    l0      = Data.Vector.Primitive.unsafeIndex l0s      l0Index
+    samples = Data.Vector.unsafeIndex           sample1s l0Index
+
+    safeSample :: Int -> Int
+    safeSample i =
+        if i < Data.Vector.Primitive.length samples
+        then fromIntegral (Data.Vector.Primitive.unsafeIndex samples i)
+        else 4294967296
+
+    y1           = y0 - l0
+    sampleIndex  = (y1 `div` 8192) * 8192
+    sampleMin    = l0Index + safeSample (word64ToInt  sampleIndex     )
+    sampleMax    = l0Index + safeSample (word64ToInt (sampleIndex + 1))
+    l1l2IndexMin = sampleMin `div` 2048
+    l1l2IndexMax =
+        min ((sampleMax - 1) `div` 2048 + 1)
+            (Data.Vector.Primitive.length l1l2s)
+    l1l2Index    = Primitives.search y1 l1 l1l2s l1l2IndexMin l1l2IndexMax
+    l1l2         = Data.Vector.Primitive.unsafeIndex l1l2s l1l2Index
+    l1_          = l1 l1l2
+
+    y2    = y1 - l1_
+    l2_0_ = l2_0 l1l2
+    l2_1_ = l2_1 l1l2
+    l2_2_ = l2_2 l1l2
+    (l2Index, y3) = do
+        let y3_0 = y2 - l2_0_
+        if  y2 < l2_0_
+        then (0, y2)
+        else do
+            let y3_1 = y3_0 - l2_1_
+            if  y3_0 < l2_1_
+            then (1, y3_0)
+            else do
+                let y3_2 = y3_1 - l2_2_
+                if  y3_1 < l2_2_
+                then (2, y3_1)
+                else (3, y3_2)
+
+    l3IndexMin = l0Index   * 67108864
+               + l1l2Index * 32
+               + l2Index   * 8
+
+    w64_0 = Data.Vector.Primitive.unsafeIndex vector  l3IndexMin
+    w64_1 = Data.Vector.Primitive.unsafeIndex vector (l3IndexMin + 1)
+    w64_2 = Data.Vector.Primitive.unsafeIndex vector (l3IndexMin + 2)
+    w64_3 = Data.Vector.Primitive.unsafeIndex vector (l3IndexMin + 3)
+    w64_4 = Data.Vector.Primitive.unsafeIndex vector (l3IndexMin + 4)
+    w64_5 = Data.Vector.Primitive.unsafeIndex vector (l3IndexMin + 5)
+    w64_6 = Data.Vector.Primitive.unsafeIndex vector (l3IndexMin + 6)
+    w64_7 = Data.Vector.Primitive.unsafeIndex vector (l3IndexMin + 7)
+
+    n_0 = popCount w64_0
+    n_1 = popCount w64_1
+    n_2 = popCount w64_2
+    n_3 = popCount w64_3
+    n_4 = popCount w64_4
+    n_5 = popCount w64_5
+    n_6 = popCount w64_6
+
+    (w64, l3Index, y4) = do
+        if  y3 < n_0
+        then (w64_0, 0, y3)
+        else do
+            let y4_0 = y3 - n_0
+            if  y4_0 < n_1
+            then (w64_1, 1, y4_0)
+            else do
+                let y4_1 = y4_0 - n_1
+                if  y4_1 < n_2
+                then (w64_2, 2, y4_1)
+                else do
+                    let y4_2 = y4_1 - n_2
+                    if  y4_2 < n_3
+                    then (w64_3, 3, y4_2)
+                    else do
+                        let y4_3 = y4_2 - n_3
+                        if  y4_3 < n_4
+                        then (w64_4, 4, y4_3)
+                        else do
+                            let y4_4 = y4_3 - n_4
+                            if y4_4 < n_5
+                            then (w64_5, 5, y4_4)
+                            else do
+                                let y4_5 = y4_4 - n_5
+                                let y4_6 = y4_5 - n_6
+                                if  y4_5 < n_6
+                                then (w64_6, 6, y4_5)
+                                else (w64_7, 7, y4_6)
+
+    l4Index = selectWord64 w64 y4
