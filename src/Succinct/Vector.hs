@@ -2,7 +2,10 @@
 
 {-@ LIQUID "--real" @-}
 
-module Succinct.Vector where
+module Succinct.Vector (
+      module Succinct.Vector
+    , module Succinct.Vector.Index
+    ) where
 
 import Data.Bits ((.&.))
 import Data.Word (Word32, Word64)
@@ -56,9 +59,6 @@ unsafeRank sbv@(SuccinctBitVector {..}) p0 = c0 + c1 + c2 + c3 + c4
         p = p0 `div` 64
         q = p0 `mod` 64
         mask = (1 << q) - 1
-
-main :: IO ()
-main = prepare (Data.Vector.Primitive.enumFromN 0 10000000) `seq` return ()
 
 {-@ assume word64ToInt :: Word64 -> { n : Int | 0 <= n } @-}
 word64ToInt :: Word64 -> Int

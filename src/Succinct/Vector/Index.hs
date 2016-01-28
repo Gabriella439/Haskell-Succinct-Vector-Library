@@ -7,6 +7,7 @@
 module Succinct.Vector.Index where
 
 import Control.Monad (when)
+import Control.DeepSeq (NFData(..))
 import Control.Monad.Primitive (PrimMonad, PrimState)
 import Control.Monad.ST (ST)
 import Data.Bits ((.&.), (.|.), complement, xor)
@@ -227,6 +228,9 @@ data SuccinctBitVector = SuccinctBitVector
     , sample1s :: {-# UNPACK #-} !(Vector (Data.Vector.Primitive.Vector Word32))
     , numOnes  :: {-# UNPACK #-} !Word64
     } deriving (Show)
+
+instance NFData SuccinctBitVector where
+    rnf x = seq x ()
 
 size :: SuccinctBitVector -> Int
 size sbv = Data.Vector.Primitive.length (vector sbv) * 64
