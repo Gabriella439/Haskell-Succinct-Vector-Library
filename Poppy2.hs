@@ -82,8 +82,7 @@ unsafeSelect
 -}
 unsafeSelect :: SuccinctBitVector -> Word64 -> Int
 unsafeSelect (SuccinctBitVector {..}) y0 =
-      l0Index   * 4294967296
-    + l1l2Index * 2048
+      l1l2Index * 2048
     + l2Index   * 512
     + l3Index   * 64
     + l4Index
@@ -138,8 +137,7 @@ unsafeSelect (SuccinctBitVector {..}) y0 =
                 then (2, y3_1)
                 else (3, y3_2)
 
-    l3IndexMin = l0Index   * 67108864
-               + l1l2Index * 32
+    l3IndexMin = l1l2Index * 32
                + l2Index   * 8
 
     w64_0 = Data.Vector.Primitive.unsafeIndex vector  l3IndexMin
