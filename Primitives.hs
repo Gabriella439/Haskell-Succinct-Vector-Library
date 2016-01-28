@@ -94,7 +94,7 @@ search
     -> v  : Data.Vector.Primitive.Vector e
     -> lo : { lo : Int | 0  <= lo && lo <  plen v }
     -> hi : { hi : Int | lo <  hi && hi <= plen v }
-    ->      { r  : Int | 0  <= r  && r  <  plen v }
+    ->      { r  : Int | lo <= r  && r  <  hi     }
     /  [hi - lo]
 @-}
 search
