@@ -4,7 +4,7 @@
 
 {-@ LIQUID "--real" @-}
 
-module Poppy where
+module Succinct.Vector.Index where
 
 import Control.Monad (when)
 import Control.Monad.Primitive (PrimMonad, PrimState)
@@ -15,7 +15,7 @@ import Data.Primitive.Types (Prim)
 import Data.Vector (Vector)
 import Data.Vector.Mutable (MVector)
 import Prelude hiding ((>>))
-import Primitives
+import Succinct.Vector.Primitives
 
 import qualified Control.Monad.ST              as ST
 import qualified Data.Bits                     as Bits

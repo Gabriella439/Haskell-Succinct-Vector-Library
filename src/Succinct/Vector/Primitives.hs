@@ -1,6 +1,6 @@
 {-@ LIQUID "--real" @-}
 
-module Primitives where
+module Succinct.Vector.Primitives where
 
 import Control.Monad.Primitive (PrimMonad, PrimState)
 import Control.Monad.ST (ST)
