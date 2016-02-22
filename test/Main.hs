@@ -1,9 +1,12 @@
+{-# LANGUAGE FlexibleInstances #-}
+
 module Main where
 
 import Data.Word (Word64)
+import qualified Data.Vector as DV
 import Succinct.Vector
 import Test.DocTest (doctest)
-import Test.QuickCheck (Property, Small(..), quickCheck, (==>))
+import Test.QuickCheck
 
 testL :: SuccinctBitVector a => a -> Small Word64 -> Property
 testL sbv (Small w64) =
@@ -62,6 +65,22 @@ bitVectorL = testL
 bitVectorR :: BitVector -> Small Int -> Property
 bitVectorR = testR
 
+data VectorRank = VectorRank [Word64] Position deriving (Eq, Show)
+
+data LenAsPos a = LenAsPos a deriving (Eq, Show)
+
+instance Arbitrary (LenAsPos VectorRank) where
+  arbitrary = do
+    h <- arbitrary :: Gen Word64
+    v <- arbitrary :: Gen [Word64]
+    let n = (length v + 1) * 64 :: Int
+    return (LenAsPos (VectorRank (h:v) (Position n)))
+
+workingLenPos = property $
+    \(LenAsPos (VectorRank as i)) ->
+      let nv = prepare (DV.fromList as :: DV.Vector Word64) in
+      rank nv i == rank nv i
+
 main :: IO ()
 main = do
     quickCheck word64L
@@ -74,4 +93,5 @@ main = do
     quickCheck superBlockR
     quickCheck bitVectorL
     quickCheck bitVectorR
+    quickCheck workingLenPos
     doctest ["src/Succinct/Vector.hs"]
