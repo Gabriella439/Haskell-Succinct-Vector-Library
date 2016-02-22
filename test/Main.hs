@@ -1,5 +1,3 @@
-{-# LANGUAGE FlexibleInstances #-}
-
 module Main where
 
 import Data.Word (Word64)
@@ -67,15 +65,16 @@ bitVectorR = testR
 
 data VectorRank = VectorRank [Word64] Position deriving (Eq, Show)
 
-data LenAsPos a = LenAsPos a deriving (Eq, Show)
+data LenAsPos = LenAsPos VectorRank deriving (Eq, Show)
 
-instance Arbitrary (LenAsPos VectorRank) where
+instance Arbitrary LenAsPos where
   arbitrary = do
     h <- arbitrary :: Gen Word64
     v <- arbitrary :: Gen [Word64]
     let n = (length v + 1) * 64 :: Int
     return (LenAsPos (VectorRank (h:v) (Position n)))
 
+workingLenPos :: Property
 workingLenPos = property $
     \(LenAsPos (VectorRank as i)) ->
       let nv = prepare (DV.fromList as :: DV.Vector Word64) in
