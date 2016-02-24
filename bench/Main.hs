@@ -15,7 +15,8 @@ setupEnv = return (prepare v)
 main :: IO ()
 main = defaultMain
     [ env setupEnv (\idx -> bgroup "Rank"
-        [ bench "Rank - Once" (whnf (unsafeRank idx) 23048298)
-        , bench "Rank - Many" (nf   (map (unsafeRank idx)) [0,1000..64000000])
+        [ bench "Once" (whnf (unsafeRank idx) 10)
+        , bench "Once" (whnf (unsafeSelect idx) 10)
+        , bench "Many" (nf   (map (unsafeRank idx)) [0,1000..64000000])
         ] )
     ]
