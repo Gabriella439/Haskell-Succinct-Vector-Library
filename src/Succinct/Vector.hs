@@ -24,14 +24,11 @@ unsafeRank
 unsafeRank :: SuccinctBitVector -> Int -> Word64
 unsafeRank sbv@(SuccinctBitVector {..}) p0 = c0 + c1 + c2 + c3 + c4
   where
-    -- TODO: Use `quotRem` when Liquid Haskell Prelude is fixed
-    p1   = p0 `div` 4294967296
+    p1   = p0 `quot` 4294967296
 
-    p2   = p0 `div` 2048
-    q2   = p0 `mod` 2048
+    (p2, q2) = p0 `quotRem` 2048
 
-    p3   = q2 `div` 512
-    q3   = q2 `mod` 512
+    (p3, q3) = q2 `quotRem` 512
 
     c0   = Data.Vector.Primitive.unsafeIndex l0s   p1
 
@@ -49,16 +46,16 @@ unsafeRank sbv@(SuccinctBitVector {..}) p0 = c0 + c1 + c2 + c3 + c4
         Data.Vector.Primitive.sum
             (Data.Vector.Primitive.map popCount
                 (Data.Vector.Primitive.unsafeSlice
-                    (((p0 - q2) + p3 * 512) `div` 64)
-                    (q3 `div` 64)
+                    (((p0 - q2) + p3 * 512) `quot` 64)
+                    (q3 `quot` 64)
                     vector ) )
 
     c4   =
         popCount (Data.Vector.Primitive.unsafeIndex vector p .&. mask)
       where
-        p = p0 `div` 64
-        q = p0 `mod` 64
+        (p, q) = p0 `quotRem` 64
         mask = (1 << q) - 1
+{-# INLINABLE unsafeRank #-}
 
 {-@ assume word64ToInt :: Word64 -> { n : Int | 0 <= n } @-}
 word64ToInt :: Word64 -> Int
@@ -73,6 +70,7 @@ word32ToInt = fromIntegral
 {-@ assume assumeLessThan :: x : Int -> y : Int -> { v : () | x < y } @-}
 assumeLessThan :: Int -> Int -> ()
 assumeLessThan _ _ = ()
+{-# INLINE assumeLessThan #-}
 
 {-
 unsafeSelect
@@ -102,16 +100,16 @@ unsafeSelect (SuccinctBitVector {..}) y0 =
         else 4294967296
 
     y1          = y0 - l0
-    sampleIndex = y1 `div` 8192
+    sampleIndex = y1 `quot` 8192
     sampleMin   = l0Index * 4294967296 + safeSample (word64ToInt  sampleIndex     )
     sampleMax   = l0Index * 4294967296 + safeSample (word64ToInt (sampleIndex + 1))
 
     -- TODO: Prove that `l1l2IndexMin` is in bounds without using `min`
     l1l2IndexMin =
-        min ( sampleMin      `div` 2048    )
+        min ( sampleMin      `quot` 2048    )
             (Data.Vector.Primitive.length l1l2s - 1)
     l1l2IndexMax =
-        min ((sampleMax - 1) `div` 2048 + 1)
+        min ((sampleMax - 1) `quot` 2048 + 1)
             (Data.Vector.Primitive.length l1l2s)
     l1l2Index    =
         assumeLessThan sampleMin sampleMax `seq`

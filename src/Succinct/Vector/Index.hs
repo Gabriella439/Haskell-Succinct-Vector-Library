@@ -101,18 +101,22 @@ popCount w64 = fromIntegral (Bits.popCount w64)
 {- l1 :: Word64 -> { v : Word64 | v < 4294967296 } -}
 l1 :: Word64 -> Word64
 l1 w64 = w64 .&. 0x00000000FFFFFFFF
+{-# INLINE l1 #-}
 
 {- l2_0 :: Word64 -> { v : Word64 | v < 1024 } -}
 l2_0 :: Word64 -> Word64
 l2_0 w64 = (w64 .&. 0x000003FF00000000) >> 32
+{-# INLINE l2_0 #-}
 
 {- l2_1 :: Word64 -> { v : Word64 | v < 1024 } -}
 l2_1 :: Word64 -> Word64
 l2_1 w64 = (w64 .&. 0x000FFC0000000000) >> 42
+{-# INLINE l2_1 #-}
 
 {- l2_2 :: Word64 -> { v : Word64 | v < 1024 } -}
 l2_2 :: Word64 -> Word64
 l2_2 w64 = (w64 .&. 0x3FF0000000000000) >> 52
+{-# INLINE l2_2 #-}
 
 {-@
 l1l2
@@ -230,10 +234,16 @@ data SuccinctBitVector = SuccinctBitVector
     } deriving (Show)
 
 instance NFData SuccinctBitVector where
-    rnf x = seq x ()
+    rnf (SuccinctBitVector {..}) =
+        rnf vector   `seq`
+        rnf l0s      `seq`
+        rnf l1l2s    `seq`
+        rnf sample1s `seq`
+        rnf numOnes
 
 size :: SuccinctBitVector -> Int
 size sbv = Data.Vector.Primitive.length (vector sbv) * 64
+{-# INLINE size #-}
 
 -- TODO: Move this to a separate module
 data Samples s = Samples
