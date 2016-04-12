@@ -1,7 +1,5 @@
 {-# LANGUAGE RecordWildCards #-}
 
-{-@ LIQUID "--real" @-}
-
 module Succinct.Vector (
       module Succinct.Vector
     , module Succinct.Vector.Index

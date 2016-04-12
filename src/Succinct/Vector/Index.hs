@@ -2,8 +2,6 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE RecordWildCards            #-}
 
-{-@ LIQUID "--real" @-}
-
 module Succinct.Vector.Index where
 
 import Control.Monad (when)
@@ -17,6 +15,7 @@ import Data.Vector (Vector)
 import Data.Vector.Mutable (MVector)
 import Prelude hiding ((>>))
 import Succinct.Vector.Primitives
+import Test.QuickCheck (Arbitrary(..))
 
 import qualified Control.Monad.ST              as ST
 import qualified Data.Bits                     as Bits
@@ -240,6 +239,9 @@ instance NFData SuccinctBitVector where
         rnf l1l2s    `seq`
         rnf sample1s `seq`
         rnf numOnes
+
+instance Arbitrary SuccinctBitVector where
+    arbitrary = fmap (prepare . Data.Vector.Primitive.fromList) arbitrary
 
 size :: SuccinctBitVector -> Int
 size sbv = Data.Vector.Primitive.length (vector sbv) * 64

@@ -1,5 +1,3 @@
-{-@ LIQUID "--real" @-}
-
 module Succinct.Vector.Primitives where
 
 import Control.Monad.Primitive (PrimMonad, PrimState)
