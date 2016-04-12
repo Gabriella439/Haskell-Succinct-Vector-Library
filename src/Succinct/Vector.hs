@@ -20,39 +20,37 @@ unsafeRank
     -> Word64
 @-}
 unsafeRank :: SuccinctBitVector -> Int -> Word64
-unsafeRank sbv@(SuccinctBitVector {..}) p0 = c0 + c1 + c2 + c3 + c4
-  where
-    p1   = p0 `quot` 4294967296
+unsafeRank sbv@(SuccinctBitVector {..}) p0 =
+    case p0 `quotRem` 2048 of
+        (p2, q2) -> case q2 `quotRem` 512 of
+            (p3, q3) -> c0 + c1 + c2 + c3 + c4
+              where
+                p1       = p0 `quot` 4294967296
 
-    (p2, q2) = p0 `quotRem` 2048
+                c0   = Data.Vector.Primitive.unsafeIndex l0s   p1
 
-    (p3, q3) = q2 `quotRem` 512
+                l1l2 = Data.Vector.Primitive.unsafeIndex l1l2s p2
 
-    c0   = Data.Vector.Primitive.unsafeIndex l0s   p1
+                c1   = l1 l1l2
 
-    l1l2 = Data.Vector.Primitive.unsafeIndex l1l2s p2
+                c2   = case p3 of
+                    0 -> 0
+                    1 -> l2_0 l1l2
+                    2 -> l2_0 l1l2 + l2_1 l1l2
+                    _ -> l2_0 l1l2 + l2_1 l1l2 + l2_2 l1l2
 
-    c1   = l1 l1l2
+                c3   =
+                    Data.Vector.Primitive.sum
+                        (Data.Vector.Primitive.map popCount
+                            (Data.Vector.Primitive.unsafeSlice
+                                (((p0 - q2) + p3 * 512) `quot` 64)
+                                (q3 `quot` 64)
+                                vector ) )
 
-    c2   = case p3 of
-        0 -> 0
-        1 -> l2_0 l1l2
-        2 -> l2_0 l1l2 + l2_1 l1l2
-        _ -> l2_0 l1l2 + l2_1 l1l2 + l2_2 l1l2
-
-    c3   =
-        Data.Vector.Primitive.sum
-            (Data.Vector.Primitive.map popCount
-                (Data.Vector.Primitive.unsafeSlice
-                    (((p0 - q2) + p3 * 512) `quot` 64)
-                    (q3 `quot` 64)
-                    vector ) )
-
-    c4   =
-        popCount (Data.Vector.Primitive.unsafeIndex vector p .&. mask)
-      where
-        (p, q) = p0 `quotRem` 64
-        mask = (1 << q) - 1
+                c4   = case p0 `quotRem` 64 of
+                    (p, q) -> popCount (Data.Vector.Primitive.unsafeIndex vector p .&. mask)
+                      where
+                        mask = (1 << q) - 1
 {-# INLINABLE unsafeRank #-}
 
 {-@ assume word64ToInt :: Word64 -> { n : Int | 0 <= n } @-}
