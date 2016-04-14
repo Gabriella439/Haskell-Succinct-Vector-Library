@@ -32,7 +32,8 @@ Library
         vector     >= 0.6 && < 0.12
     Exposed-Modules:
           Succinct.Vector
-        , Succinct.Vector.Index
+    Other-Modules:
+          Succinct.Vector.Index
         , Succinct.Vector.Primitives
     GHC-Options: -O2 -Wall
     Default-Language: Haskell2010

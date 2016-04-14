@@ -1,17 +1,100 @@
 {-# LANGUAGE RecordWildCards #-}
 
+{-| This module lets you index a vector of bits so that you can efficiently
+    navigate those bits using `rank` and `select`:
+
+    * `rank` lets you count how many one or zero bits there are up to a given
+      position
+
+    * `select` lets you find the @\'n\'@th one or zero
+
+    Many other operations you might want to perform can be reduced to the
+    primitive `rank` and `select` functions.  Think of this module as a building
+    block for building higher-level high-performance algorithms.
+
+    This module is based on the paper:
+
+    <https://www.cs.cmu.edu/~dga/papers/zhou-sea2013.pdf Zhou, Dong, David G. Andersen, and Michael Kaminsky. "Space-efficient, high-performance rank and select structures on uncompressed bit sequences." Experimental Algorithms. Springer Berlin Heidelberg, 2013. 151-163.>
+
+    ... which shows how to implement an efficient index that provides fast
+    `rank` and `select` operations with @O(log N)@ time complexity and very
+    good constant factors.
+
+    This is not the only possible way to index a bit vector to provide `rank`
+    and `select` and there are other implementations that provide varying
+    tradeoffs.  I picked this implementation because it provides a good balance
+    of the following factors:
+
+    * query speed
+    * index size
+    * index construction speed
+    * ease of proving the implementation correct using refinement types
+
+    Here is an example of how you would use this module:
+
+>>> import Data.Vector.Primitive
+>>> -- An example 128-bit input vector
+>>> let v  = fromList [0x0000000000000001, 0x0000000000000002] :: Vector Word64
+>>> -- Build an index from the bit vector
+>>> let bv = prepare v
+>>> index bv   0  -- The lowest bit of the first `Word64`
+Just True
+>>> index bv   1  -- The second-lowest bit of the first `Word64`
+Just False
+>>> index bv  64  -- The lowest bit of the second `Word64`
+Just False
+>>> index bv  65  -- The second-lowest bit of the second `Word64`
+Just True
+>>> index bv 129  -- Out-of-bounds `index` fails
+Nothing
+>>> rank bv   0  -- Count how many ones in the first 0 bits (always returns 0)
+Just 0
+>>> rank bv   1  -- Count how many ones in the first 1 bits
+Just 1
+>>> rank bv   2  -- Count how many ones in the first 2 bits
+Just 1
+>>> rank bv 128  -- Count how many ones in all 128 bits
+Just 2
+>>> rank bv 129  -- Out-of-bounds `rank` fails
+Nothing
+>>> select bv 0  -- Find the 0-indexed position of the first one bit
+Just 0
+>>> select bv 1  -- Find the 0-indexed position of the second one bit
+Just 65
+>>> select bv 2  -- Out-of-bounds `select` fails
+Nothing
+-}
+
 module Succinct.Vector (
-      module Succinct.Vector
-    , module Succinct.Vector.Index
+      SuccinctBitVector
+    , prepare
+    , index
+    , rank
+    , select
+    , unsafeIndex
+    , unsafeRank
+    , unsafeSelect
     ) where
 
 import Data.Bits ((.&.))
 import Data.Word (Word32, Word64)
 import Succinct.Vector.Index
 
+import qualified Data.Bits                  as Bits
 import qualified Data.Vector
 import qualified Data.Vector.Primitive
 import qualified Succinct.Vector.Primitives as Primitives
+
+{-@
+unsafeIndex
+    :: sbv : SuccinctBitVector
+    -> { n : Int | 0 <= n && n < plen (vector sbv) * 64 }
+    -> Bool
+@-}
+unsafeIndex :: SuccinctBitVector -> Int -> Bool
+unsafeIndex (SuccinctBitVector {..}) n =
+    case n `quotRem` 64 of
+        (p, q) -> Bits.testBit (Data.Vector.Primitive.unsafeIndex vector p) q
 
 {-@
 unsafeRank
@@ -20,7 +103,7 @@ unsafeRank
     -> Word64
 @-}
 unsafeRank :: SuccinctBitVector -> Int -> Word64
-unsafeRank sbv@(SuccinctBitVector {..}) p0 =
+unsafeRank (SuccinctBitVector {..}) p0 =
     case p0 `quotRem` 2048 of
         (p2, q2) -> case q2 `quotRem` 512 of
             (p3, q3) -> c0 + c1 + c2 + c3 + c4
@@ -68,12 +151,12 @@ assumeLessThan :: Int -> Int -> ()
 assumeLessThan _ _ = ()
 {-# INLINE assumeLessThan #-}
 
-{-
+{-@
 unsafeSelect
     :: sbv : SuccinctBitVector
-    -> { y0  : Word64 | 0 <= y0 }
-    -> (Word32, Word32)
--}
+    -> { y0  : Word64 | 0 <= y0 && y0 < numOnes sbv }
+    -> Int
+@-}
 unsafeSelect :: SuccinctBitVector -> Word64 -> Int
 unsafeSelect (SuccinctBitVector {..}) y0 =
       l1l2Index * 2048
@@ -183,3 +266,27 @@ unsafeSelect (SuccinctBitVector {..}) y0 =
                                 else (w64_7, 7, y4_6)
 
     l4Index = selectWord64 w64 y4
+
+index :: SuccinctBitVector -> Int -> Maybe Bool
+index sbv@(SuccinctBitVector {..}) n
+    | 0 <= n && n < Data.Vector.Primitive.length vector * 64
+        = Just (unsafeIndex sbv n)
+    | otherwise = Nothing
+
+rank :: SuccinctBitVector -> Int -> Maybe Word64
+rank sbv@(SuccinctBitVector {..}) n
+    | 0 <= n && n < len
+        = Just (unsafeRank sbv n)
+    | n == len
+        = Just numOnes
+    | otherwise
+        = Nothing
+  where
+    len = Data.Vector.Primitive.length vector * 64
+
+select :: SuccinctBitVector -> Word64 -> Maybe Int
+select sbv@(SuccinctBitVector {..}) w64
+    | 0 <= w64 && w64 < numOnes
+        = Just (unsafeSelect sbv w64)
+    | otherwise
+        = Nothing
