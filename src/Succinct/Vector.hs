@@ -85,6 +85,19 @@ import qualified Data.Vector
 import qualified Data.Vector.Primitive
 import qualified Succinct.Vector.Primitives as Primitives
 
+{- $setup
+>>> import Test.QuickCheck (Small(..))
+-}
+
+{-| Unsafe version of `index` that performs no bounds checking
+
+    If you supply an invalid index you might get a segmentation fault
+
+> unsafeIndex
+>     :: sbv : SuccinctBitVector
+>     -> { n : Int | 0 <= n && n < plen (vector sbv) * 64 }
+>     -> Bool
+-}
 {-@
 unsafeIndex
     :: sbv : SuccinctBitVector
@@ -96,10 +109,19 @@ unsafeIndex (SuccinctBitVector {..}) n =
     case n `quotRem` 64 of
         (p, q) -> Bits.testBit (Data.Vector.Primitive.unsafeIndex vector p) q
 
+{-| Unsafe version of `rank` that performs no bounds checking
+
+    If you supply an invalid index you might get a segmentation fault
+
+> unsafeRank
+>     :: sbv : SuccinctBitVector
+>     -> { n : Int | 0 <= n && n < plen (vector sbv) * 64 }
+>     -> Word64
+-}
 {-@
 unsafeRank
     :: sbv : SuccinctBitVector
-    -> { bit : Int | 0 <= bit && bit < plen (vector sbv) * 64 }
+    -> { n : Int | 0 <= n && n < plen (vector sbv) * 64 }
     -> Word64
 @-}
 unsafeRank :: SuccinctBitVector -> Int -> Word64
@@ -151,10 +173,20 @@ assumeLessThan :: Int -> Int -> ()
 assumeLessThan _ _ = ()
 {-# INLINE assumeLessThan #-}
 
+{-| Unsafe version of `select` that does not verify that there are at least as
+    many ones in the vector as you request
+
+    If you supply an invalid number of ones, then you might get a garbage result
+
+> unsafeSelect
+>     :: sbv : SuccinctBitVector
+>     -> { n : Word64 | 0 <= n && n < numOnes sbv }
+>     -> Int
+-}
 {-@
 unsafeSelect
     :: sbv : SuccinctBitVector
-    -> { y0  : Word64 | 0 <= y0 && y0 < numOnes sbv }
+    -> { n : Word64 | 0 <= n && n < numOnes sbv }
     -> Int
 @-}
 unsafeSelect :: SuccinctBitVector -> Word64 -> Int
@@ -267,12 +299,26 @@ unsafeSelect (SuccinctBitVector {..}) y0 =
 
     l4Index = selectWord64 w64 y4
 
+{-| @index sbv n@ returns the @n@th bit in the vector indexed by @sbv@
+
+    Returns `Nothing` if you index out of bounds
+
+prop> index sbv i == do x <- rank sbv (i + 1); y <- rank sbv i; return ((x - y) == 1)
+-}
 index :: SuccinctBitVector -> Int -> Maybe Bool
 index sbv@(SuccinctBitVector {..}) n
     | 0 <= n && n < Data.Vector.Primitive.length vector * 64
         = Just (unsafeIndex sbv n)
     | otherwise = Nothing
 
+{-| @rank sbv n@ returns the number of one bits preceding the index @n@
+    (0-based)
+
+>>> let sbv = prepare (Data.Vector.Primitive.fromList [0xA]) in rank sbv 3
+Just 1
+
+prop> rank sbv 0 == Just 0
+-}
 rank :: SuccinctBitVector -> Int -> Maybe Word64
 rank sbv@(SuccinctBitVector {..}) n
     | 0 <= n && n < len
@@ -284,6 +330,14 @@ rank sbv@(SuccinctBitVector {..}) n
   where
     len = Data.Vector.Primitive.length vector * 64
 
+{-| @select sbv n@ returns the index (0-based) of the @n@th one bit (0-based) in
+    the indexed vector
+
+>>> let sbv = prepare (Data.Vector.Primitive.fromList [0xA]) in select sbv 1
+Just 3
+
+prop> \(Small n) -> 0 <= n ==> n < numOnes sbv ==> (do m <- select sbv n; rank sbv m) == Just n
+-}
 select :: SuccinctBitVector -> Word64 -> Maybe Int
 select sbv@(SuccinctBitVector {..}) w64
     | 0 <= w64 && w64 < numOnes

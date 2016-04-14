@@ -274,6 +274,9 @@ freezeSamples (Samples {..}) =
     primitiveFreezeST
         (Data.Vector.Primitive.Mutable.take numElems samples)
 
+{-| Create a compact index from a `Data.Vector.Primitive.Vector` of `Word64`s
+    that supports efficient `rank` and `select` operations
+-}
 prepare :: Data.Vector.Primitive.Vector Word64 -> SuccinctBitVector
 prepare vector = ST.runST (do
     l0sMutable   <- do
