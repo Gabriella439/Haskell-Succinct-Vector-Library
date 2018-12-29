@@ -1,6 +1,9 @@
 let
 
-  pkgs = import <nixpkgs> { };
+  pkgs = import (builtins.fetchTarball {
+    url = "https://github.com/NixOS/nixpkgs/archive/a4c4cbb613cc3e15186de0fdb04082fa7e38f6a0.tar.gz";
+    sha256 = "1lagfycy2lvfc8cdxk98dz2rxjlrbmv9hj42x0x40sy66bck1w0y";
+  }) {};
 
   liquid-fixpoint-src = pkgs.fetchFromGitHub {
     owner = "ucsd-progsys";
