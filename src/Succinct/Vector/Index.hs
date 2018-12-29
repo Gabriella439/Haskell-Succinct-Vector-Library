@@ -292,7 +292,7 @@ prepare vector = ST.runST (do
             else 0
 
     -- TODO: Prove that `loop0` terminates
-    let {-@ Lazy loop0 @-}
+    let {-@ lazyvar loop0 @-}
         loop0 !i0 !previousCount !currentCount
             | i0 <= Data.Vector.Primitive.length vector = do
                 let (p0, q0) = quotRem i0 67108864
@@ -352,7 +352,7 @@ prepare vector = ST.runST (do
     sample1sMutable <- do
         mutableReplicateMST (Data.Vector.Primitive.length l0s) newSamples
 
-    let {-@ Lazy loop1 @-}
+    let {-@ lazyvar loop1 @-}
         loop1 !numOnes !vectorIndex
             | vectorIndex < Data.Vector.Primitive.length vector = do
                 let samplesIndex = vectorIndex `div` 67108864 
